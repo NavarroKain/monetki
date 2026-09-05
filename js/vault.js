@@ -1,83 +1,37 @@
 "use strict";
-/* Экспорт данных в vault (§4, §6) — путь «без сервера», данные забирает FolderSync.
-   IndexedDB (источник истины) → Markdown с Dataview-инлайн-полями. Приложение файл
-   НЕ читает (синхронизация односторонняя), поэтому размер файла на приложение не влияет.
+/* Экспорт/импорт данных vault (§4, §6) — путь «без сервера», файл носит FolderSync.
+   IndexedDB (источник истины) ⇄ ОДИН файл «Финансы — Монетки.json».
 
-   Два режима, выбираются по возможностям устройства:
-     • Папка (помесячно) — есть showDirectoryPicker (десктоп): пишет
-       «Финансы — ГГГГ-ММ.md» по месяцам + _Счета.md + _Категории.md. Масштабируется,
-       Obsidian/Dataview остаются лёгкими.
-     • Один файл — телефон без доступа к папке: снапшот в один файл (перезапись),
-       через сохранённый handle → showSaveFilePicker → download (дальше FolderSync). */
+   ЕДИНЫЙ ФОРМАТ на всех платформах — один JSON-файл со всеми данными (счета,
+   категории, операции, план месяца). Так десктоп и телефон работают с ОДНИМ и тем
+   же файлом (без рассинхрона наборов файлов), а round-trip точный: сохраняются id,
+   null/булевы, любые символы в заметках.
+     • Десктоп (showDirectoryPicker): пишем файл в выбранную папку vault
+       (сохранённый handle папки → тихая перезапись).
+     • Телефон (нет доступа к папке): тот же файл через сохранённый file-handle →
+       showSaveFilePicker → download (дальше FolderSync донесёт в vault).
+   Импорт (parseJSON/importFromDir) читает этот же файл обратно. Старый Markdown-
+   экспорт (`.md` с Dataview-полями) ещё поддержан на ЧТЕНИЕ ради миграции (parseVault). */
 
 const Vault = (function () {
-  const FNAME = "Финансы — Монетки.md";
+  const FNAME_JSON = "Финансы — Монетки.json";
 
   const pad = (n) => String(n).padStart(2, "0");
-  const dt = (iso) => (iso ? iso.slice(0, 10) + " " + iso.slice(11, 16) : "");
   const nowStr = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
-  const esc = (s) => String(s == null ? "" : s).replace(/[\[\]]/g, "");
+  const uid = () => (crypto.randomUUID ? crypto.randomUUID()
+    : "id-" + Date.now() + "-" + Math.random().toString(16).slice(2));
 
-  // ---- строители секций (§4) ----
-  function txLine(t) {
-    let s = `- ${dt(t.ts)} [amount:: ${t.amount}] [cat:: ${esc(t.cat)}] [acc:: ${esc(t.acc)}] [cur:: ${t.cur || "UAH"}] [type:: ${t.type || "expense"}]`;
-    if (t.type === "transfer" && t.to) s += ` [to:: ${esc(t.to)}]`;
-    if (t.note) s += ` ${esc(t.note)}`;
-    return s;
-  }
-  function accountLines(state) {
-    return state.accounts.slice().sort((x, y) => x.order - y.order).map((a) => {
-      let s = `- [account:: ${esc(a.name)}] [balance:: ${a.balance}] [cur:: ${a.currency}] [kind:: ${a.kind}]`;
-      if (a.plan != null) s += ` [plan:: ${a.plan}]`;
-      if (a.archived) s += ` [archived:: true]`;
-      return s;
-    });
-  }
-  function categoryLines(state) {
-    return state.categories.slice().sort((x, y) => x.order - y.order).map((c) => {
-      let s = `- [category:: ${esc(c.name)}] [limit:: ${c.limit == null ? "" : c.limit}] [emoji:: ${c.emoji}]`;
-      if (c.group) s += ` [group:: ${esc(c.group)}]`;
-      if (c.archived) s += ` [archived:: true]`;
-      return s;
-    });
-  }
-  function groupByMonth(txs) {
-    const by = {};
-    for (const t of txs.slice().sort((a, b) => (a.ts < b.ts ? -1 : 1))) {
-      const m = (t.ts || "").slice(0, 7); (by[m] = by[m] || []).push(t);
-    }
-    return by;
-  }
-
-  function monthMd(month, txs) {
-    const L = ["---", "app: Монетки", `month: ${month}`, `updated: ${nowStr()}`, "---", "",
-      `# Финансы — ${month}`, "", "> Автоэкспорт из PWA. Формат — Dataview-инлайн-поля.", ""];
-    for (const t of txs) L.push(txLine(t));
-    L.push("");
-    return L.join("\n");
-  }
-  function accountsMd(state) {
-    return ["---", "app: Монетки", `updated: ${nowStr()}`, "---", "", "# Счета", ""].concat(accountLines(state), "").join("\n");
-  }
-  function categoriesMd(state) {
-    return ["---", "app: Монетки", `updated: ${nowStr()}`, "---", "", "# Категории", ""].concat(categoryLines(state), "").join("\n");
-  }
-
-  // Один совмещённый файл (фолбэк для телефона).
-  function buildMarkdown(state) {
-    const L = ["---", "app: Монетки", `updated: ${nowStr()}`, "---", "",
-      "# Финансы — данные Монеток", "",
-      "> Автоэкспорт из PWA. Формат — Dataview-инлайн-поля. Правки лучше делать в приложении.", "",
-      "## Операции", ""];
-    const by = groupByMonth(state.transactions);
-    const months = Object.keys(by).sort();
-    if (!months.length) L.push("_пока нет операций_");
-    for (const m of months) { L.push(`### ${m}`); for (const t of by[m]) L.push(txLine(t)); L.push(""); }
-    L.push("## Счета", "");
-    L.push.apply(L, accountLines(state)); L.push("");
-    L.push("## Категории", "");
-    L.push.apply(L, categoryLines(state)); L.push("");
-    return L.join("\n");
+  // ---- сборка снапшота (§4) ----
+  function buildJSON(state) {
+    return JSON.stringify({
+      app: "Монетки",
+      schema: 1,
+      updated: nowStr(),
+      meta: { plan: state.meta && state.meta.plan != null ? state.meta.plan : 0 },
+      accounts: state.accounts,
+      categories: state.categories,
+      transactions: state.transactions,
+    }, null, 2);
   }
 
   // ---- File System Access ----
@@ -92,17 +46,11 @@ const Vault = (function () {
     const fh = await dir.getFileHandle(name, { create: true });
     await writeHandle(fh, text);
   }
-  async function writeDir(dir, state) {
-    const by = groupByMonth(state.transactions);
-    for (const m of Object.keys(by)) await writeInDir(dir, `Финансы — ${m}.md`, monthMd(m, by[m]));
-    await writeInDir(dir, "_Счета.md", accountsMd(state));
-    await writeInDir(dir, "_Категории.md", categoriesMd(state));
-  }
-  function download(text, name) {
-    const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+  function download(text, name, type) {
+    const blob = new Blob([text], { type: (type || "application/json") + ";charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url; a.download = name || FNAME; document.body.appendChild(a); a.click();
+    a.href = url; a.download = name || FNAME_JSON; document.body.appendChild(a); a.click();
     a.remove(); setTimeout(() => URL.revokeObjectURL(url), 4000);
   }
 
@@ -116,39 +64,40 @@ const Vault = (function () {
 
   // Главный экспорт. mode: "dir"|"handle"|"picked"|"download".
   async function exportVault(state) {
-    // 1) режим папки (помесячно) — сохранённый handle папки
+    const json = buildJSON(state);
+
+    // 1) режим папки — сохранённый handle папки (тихая перезапись в vault)
     const savedDir = await DB.get("meta", "vaultDir").catch(() => null);
     if (savedDir && savedDir.value) {
-      try { if (await ensurePerm(savedDir.value)) { await writeDir(savedDir.value, state); return { mode: "dir" }; } }
+      try { if (await ensurePerm(savedDir.value)) { await writeInDir(savedDir.value, FNAME_JSON, json); return { mode: "dir" }; } }
       catch (e) { /* папка недоступна — предложим выбрать заново ниже */ }
     }
-    // 1b) если API папок есть, но папка ещё не выбрана — выбрать один раз
+    // 1b) API папок есть, но папка ещё не выбрана — выбрать один раз
     if (typeof window.showDirectoryPicker === "function") {
       const dir = await window.showDirectoryPicker({ mode: "readwrite" });
-      await writeDir(dir, state);
+      await writeInDir(dir, FNAME_JSON, json);
       try { await DB.put("meta", { key: "vaultDir", value: dir }); } catch (e) { /* не сериализуется — ок */ }
       return { mode: "dir" };
     }
 
-    // 2) один файл — сохранённый handle
-    const md = buildMarkdown(state);
+    // 2) один файл — сохранённый handle (только .json; старый .md-handle игнорируем)
     const saved = await DB.get("meta", "vaultHandle").catch(() => null);
-    if (saved && saved.value) {
-      try { if (await ensurePerm(saved.value)) { await writeHandle(saved.value, md); return { mode: "handle" }; } }
+    if (saved && saved.value && saved.value.name && /\.json$/i.test(saved.value.name)) {
+      try { if (await ensurePerm(saved.value)) { await writeHandle(saved.value, json); return { mode: "handle" }; } }
       catch (e) { /* handle протух */ }
     }
     // 2b) выбор файла один раз
     if (typeof window.showSaveFilePicker === "function") {
       const handle = await window.showSaveFilePicker({
-        suggestedName: FNAME,
-        types: [{ description: "Markdown", accept: { "text/markdown": [".md"] } }],
+        suggestedName: FNAME_JSON,
+        types: [{ description: "JSON", accept: { "application/json": [".json"] } }],
       });
-      await writeHandle(handle, md);
+      await writeHandle(handle, json);
       try { await DB.put("meta", { key: "vaultHandle", value: handle }); } catch (e) { /* ок */ }
       return { mode: "picked" };
     }
     // 3) обычная загрузка
-    download(md);
+    download(json, FNAME_JSON);
     return { mode: "download" };
   }
 
@@ -157,7 +106,118 @@ const Vault = (function () {
     await DB.del("meta", "vaultDir").catch(() => {});
   }
 
-  return { buildMarkdown, monthMd, accountsMd, categoriesMd, exportVault, capabilities, forgetHandle };
+  // ---- импорт/восстановление ----
+  const num = (v) => { const s = String(v == null ? "" : v).trim().replace(",", "."); if (s === "") return null; const n = parseFloat(s); return isNaN(n) ? null : n; };
+
+  // Основной формат: JSON-снапшот. Возвращает {accounts, categories, transactions, plan}.
+  function parseJSON(text) {
+    let obj;
+    try { obj = JSON.parse(text); } catch (e) { return { accounts: [], categories: [], transactions: [], plan: null, error: true }; }
+    if (!obj || typeof obj !== "object") return { accounts: [], categories: [], transactions: [], plan: null };
+    const arr = (x) => (Array.isArray(x) ? x : []);
+    const accounts = arr(obj.accounts).map((a, i) => ({
+      id: a.id || uid(), name: String(a.name == null ? "" : a.name),
+      balance: Number(a.balance) || 0, currency: a.currency || "UAH", kind: a.kind || "card",
+      plan: a.plan == null || a.plan === "" ? null : Number(a.plan),
+      archived: !!a.archived, order: a.order == null ? i : a.order,
+    })).filter((a) => a.name);
+    const categories = arr(obj.categories).map((c, i) => ({
+      id: c.id || uid(), name: String(c.name == null ? "" : c.name),
+      limit: c.limit == null || c.limit === "" ? null : Number(c.limit),
+      emoji: c.emoji || "🪙", group: c.group || null, archived: !!c.archived,
+      order: c.order == null ? i : c.order,
+    })).filter((c) => c.name);
+    const transactions = arr(obj.transactions).map((t) => {
+      const o = {
+        id: t.id || uid(), ts: t.ts || "", amount: Number(t.amount) || 0,
+        cat: String(t.cat == null ? "" : t.cat), acc: String(t.acc == null ? "" : t.acc),
+        cur: t.cur || "UAH", type: t.type || "expense", synced: t.synced !== false,
+      };
+      if (t.to) o.to = t.to;
+      if (t.note) o.note = t.note;
+      return o;
+    });
+    const plan = obj.meta && obj.meta.plan != null ? Number(obj.meta.plan) : null;
+    return { accounts, categories, transactions, plan };
+  }
+
+  // Legacy-формат: Markdown с Dataview-инлайн-полями (старый экспорт). Только ЧТЕНИЕ.
+  // Принимает массив текстов (совмещённый или помесячные + _Счета + _Категории).
+  function parseVault(texts) {
+    const accounts = [], categories = [], transactions = [];
+    let ai = 0, ci = 0;
+    const seen = { acc: new Set(), cat: new Set(), tx: new Set() };
+
+    for (const text of [].concat(texts)) {
+      for (const raw of String(text == null ? "" : text).split(/\r?\n/)) {
+        const line = raw.trim();
+        if (line.slice(0, 2) !== "- ") continue;
+        const pairs = {};
+        let m; const re = /\[([a-zA-Z]+)::\s*([^\]]*?)\]/g;
+        while ((m = re.exec(line))) pairs[m[1]] = m[2].trim();
+
+        if ("account" in pairs) {
+          const name = pairs.account; if (!name || seen.acc.has(name)) continue; seen.acc.add(name);
+          accounts.push({
+            id: uid(), name, balance: num(pairs.balance) || 0, currency: pairs.cur || "UAH",
+            kind: pairs.kind || "card", plan: num(pairs.plan),
+            archived: pairs.archived === "true", order: ai++,
+          });
+        } else if ("category" in pairs) {
+          const name = pairs.category; if (!name || seen.cat.has(name)) continue; seen.cat.add(name);
+          categories.push({
+            id: uid(), name, limit: num(pairs.limit), emoji: pairs.emoji || "🪙",
+            group: pairs.group || null, archived: pairs.archived === "true", order: ci++,
+          });
+        } else if ("amount" in pairs) {
+          const amount = num(pairs.amount); if (amount === null) continue;
+          const dm = line.match(/^-\s*(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2})/);
+          const ts = dm ? `${dm[1]}T${dm[2].padStart(5, "0")}:00` : "";
+          const key = [ts, amount, pairs.cat || "", pairs.acc || "", pairs.to || "", pairs.type || ""].join("|");
+          if (seen.tx.has(key)) continue; seen.tx.add(key);
+          const li = line.lastIndexOf("]");
+          const note = li >= 0 ? line.slice(li + 1).trim() : "";
+          const t = {
+            id: uid(), ts, amount, cat: pairs.cat || "", acc: pairs.acc || "",
+            cur: pairs.cur || "UAH", type: pairs.type || "expense", synced: true,
+          };
+          if (pairs.to) t.to = pairs.to;
+          if (note) t.note = note;
+          transactions.push(t);
+        }
+      }
+    }
+    return { accounts, categories, transactions, plan: null };
+  }
+
+  // Автоопределение формата одного файла: JSON или legacy Markdown.
+  function parseAny(text) {
+    const t = String(text == null ? "" : text).trim();
+    if (t[0] === "{" || t[0] === "[") return parseJSON(text);
+    return parseVault([text]);
+  }
+
+  // Похоже на старый Markdown-экспорт Монеток?
+  function isLegacyVaultFile(name) {
+    return /^Финансы — .+\.md$/i.test(name) || name === "_Счета.md" || name === "_Категории.md";
+  }
+
+  // Импорт из ПАПКИ: предпочитаем JSON (источник правды), иначе fallback на legacy .md.
+  async function importFromDir(dir) {
+    let jsonText = null; const mdTexts = [];
+    for await (const h of dir.values()) {
+      if (h.kind !== "file") continue;
+      try {
+        if (h.name === FNAME_JSON) { jsonText = await (await h.getFile()).text(); }
+        else if (isLegacyVaultFile(h.name)) { mdTexts.push(await (await h.getFile()).text()); }
+      } catch (e) { /* пропускаем нечитаемый */ }
+    }
+    if (jsonText != null) return { data: parseJSON(jsonText), files: 1, format: "json" };
+    if (mdTexts.length) return { data: parseVault(mdTexts), files: mdTexts.length, format: "md" };
+    return { data: { accounts: [], categories: [], transactions: [], plan: null }, files: 0, format: null };
+  }
+
+  return { buildJSON, parseJSON, parseVault, parseAny, exportVault, importFromDir, capabilities, forgetHandle };
 })();
 
 window.Vault = Vault;

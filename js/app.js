@@ -106,7 +106,7 @@ const App = (function () {
         <div class="cname">${esc(c.name)}</div>
         <div class="cspent" style="color:${st.txt}">${sp ? f0(sp) : 0}</div>
         <div class="climit">${c.limit ? "/ " + f0(c.limit) : "·"}</div>`;
-      bindPress(b, () => openSheet("expense", c.name), () => editCategory(c));
+      bindPress(b, () => showOperations("category", c.name), () => editCategory(c));
       coins.appendChild(b);
     }
     // «＋ новая категория»
@@ -120,7 +120,7 @@ const App = (function () {
     for (const a of realAccounts()) {
       const d = document.createElement("button"); d.className = "acc";
       d.innerHTML = `<div class="dot">${curSym(a.currency)}</div><div class="an">${esc(a.name)}</div><div class="ab">${f2(a.balance)} ${curSym(a.currency)}</div>`;
-      bindPress(d, () => editAccount(a), () => editAccount(a));
+      bindPress(d, () => showOperations("account", a.name), () => editAccount(a));
       accs.appendChild(d);
     }
     const addA = document.createElement("button"); addA.className = "acc add";
@@ -132,16 +132,20 @@ const App = (function () {
     const rec = $("recent"); rec.innerHTML = "";
     const items = state.transactions.slice().sort((a, b) => (a.ts < b.ts ? 1 : -1)).slice(0, 7);
     if (!items.length) rec.innerHTML = `<div class="rrow"><span class="s">Пока пусто — тапни монетку категории</span></div>`;
-    for (const t of items) {
-      const isT = t.type === "transfer";
-      const col = isT ? "var(--muted)" : (t.amount < 0 ? "var(--red)" : "var(--coin-green)");
-      const sign = isT ? "" : (t.amount < 0 ? "−" : "+");
-      const label = isT ? `${esc(t.acc)} → ${esc(t.to)}` : esc(t.cat);
-      const r = document.createElement("div"); r.className = "rrow";
-      r.innerHTML = `<div><div class="l">${label}</div><div class="s">${esc(t.acc)}${isT ? "" : " · " + (t.ts || "").slice(5, 10).replace("-", ".")}</div></div><b style="color:${col}">${sign}${f2(Math.abs(t.amount))} ${curSym(t.cur)}</b>`;
-      r.onclick = () => editOperation(t);
-      rec.appendChild(r);
-    }
+    for (const t of items) rec.appendChild(opRow(t, true));
+  }
+
+  // строка операции для списков (последние операции, список по объекту)
+  function opRow(t, withDate) {
+    const isT = t.type === "transfer";
+    const col = isT ? "var(--muted)" : (t.amount < 0 ? "var(--red)" : "var(--coin-green)");
+    const sign = isT ? "" : (t.amount < 0 ? "−" : "+");
+    const label = isT ? `${esc(t.acc)} → ${esc(t.to)}` : esc(t.cat);
+    const date = withDate && !isT ? " · " + (t.ts || "").slice(5, 10).replace("-", ".") : "";
+    const r = document.createElement("div"); r.className = "rrow";
+    r.innerHTML = `<div><div class="l">${label}</div><div class="s">${esc(t.acc)}${date}</div></div><b style="color:${col}">${sign}${f2(Math.abs(t.amount))} ${curSym(t.cur)}</b>`;
+    r.onclick = () => editOperation(t);
+    return r;
   }
 
   function esc(s) { return String(s).replace(/[&<>"]/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m])); }
@@ -194,11 +198,16 @@ const App = (function () {
     selBalAcc = (realAccounts()[0] && realAccounts()[0].name) || null;
     document.querySelectorAll("#modes button").forEach((b) => b.classList.toggle("on", b.dataset.m === m));
     buildSheet();
+    editor.classList.remove("on"); // не наслаивать лист ввода на редактор/список
     openScrim(); sheet.classList.add("on");
   }
-  function openScrim() { scrim.classList.add("on"); document.documentElement.classList.add("modal-open"); document.body.classList.add("modal-open"); }
+  // Защита от «фантомного» click, который мобильные браузеры шлют вслед за тапом:
+  // модалка открывается по pointerup, следом прилетает click в ту же точку — уже
+  // по scrim — и мгновенно её закрывает. Игнорируем клики по scrim сразу после открытия.
+  let scrimGuardUntil = 0;
+  function openScrim() { scrim.classList.add("on"); document.documentElement.classList.add("modal-open"); document.body.classList.add("modal-open"); scrimGuardUntil = Date.now() + 450; }
   function closeAll() { scrim.classList.remove("on"); sheet.classList.remove("on"); editor.classList.remove("on"); document.documentElement.classList.remove("modal-open"); document.body.classList.remove("modal-open"); }
-  scrim.onclick = closeAll;
+  scrim.onclick = () => { if (Date.now() < scrimGuardUntil) return; closeAll(); };
 
   function chip(text, on, onclick, extra) {
     const b = document.createElement("button");
@@ -309,6 +318,7 @@ const App = (function () {
   function openEditor(html, wire) {
     $("editorBody").innerHTML = html;
     if (wire) wire();
+    sheet.classList.remove("on"); // не наслаивать редактор/список на лист ввода
     openScrim(); editor.classList.add("on");
   }
 
@@ -534,6 +544,53 @@ const App = (function () {
     });
   }
 
+  // ---------- список операций по объекту (категория / счёт) ----------
+  const txMonth = (t) => (t.ts || "").slice(0, 7);
+  function showOperations(kind, name) {
+    let items, emoji, subtitle, total, totalColor, addLabel = null;
+    if (kind === "category") {
+      const c = catByName(name);
+      items = state.transactions.filter((t) => t.type === "expense" && t.cat === name && txMonth(t) === MONTH);
+      emoji = c ? c.emoji : "🪙";
+      subtitle = "Расходы · " + monthTitle();
+      total = spentOf(name);
+      totalColor = total > 0 ? "var(--red)" : "var(--muted)";
+      addLabel = "＋ Добавить расход";
+    } else {
+      const a = accByName(name);
+      items = state.transactions.filter((t) => (t.acc === name || t.to === name) && txMonth(t) === MONTH);
+      emoji = a ? curSym(a.currency) : "•";
+      subtitle = "Обороты · " + monthTitle();
+      let net = 0;
+      for (const t of items) net += (t.acc === name ? t.amount : -t.amount);
+      total = net;
+      totalColor = net < 0 ? "var(--red)" : net > 0 ? "var(--coin-green)" : "var(--muted)";
+    }
+    items.sort((a, b) => (a.ts < b.ts ? 1 : -1));
+    const totalStr = (kind === "category")
+      ? f0(total) + " ₴"
+      : (total > 0 ? "+" : total < 0 ? "−" : "") + f0(Math.abs(total)) + (accByName(name) ? " " + curSym(accByName(name).currency) : "");
+
+    openEditor(`
+      <div class="form">
+        <div class="sheet-head" style="margin-bottom:12px">
+          <div class="em" style="background:var(--surface-2)">${esc(emoji)}</div>
+          <div><div class="t" style="font-weight:800;color:var(--ink);font-size:15px">${esc(name)}</div><div class="t">${subtitle}</div></div>
+          <div class="amt" style="font-size:22px;color:${totalColor}">${totalStr}</div>
+        </div>
+        ${addLabel ? `<button class="save" id="opAdd" style="margin-top:0;margin-bottom:12px">${addLabel}</button>` : ""}
+        <div class="recent" id="opList"></div>
+        <div class="form-actions"><button class="btn ghost" id="eCancel">Закрыть</button></div>
+      </div>`, () => {
+      $("eCancel").onclick = closeAll;
+      const add = $("opAdd");
+      if (add) add.onclick = () => openSheet("expense", name);
+      const list = $("opList");
+      if (!items.length) list.innerHTML = `<div class="rrow"><span class="s">Нет операций за этот месяц</span></div>`;
+      else for (const t of items) list.appendChild(opRow(t, true));
+    });
+  }
+
   // ---------- меню ----------
   const menu = $("menu");
   $("menuBtn").onclick = (e) => { e.stopPropagation(); menu.classList.toggle("on"); };
@@ -548,6 +605,8 @@ const App = (function () {
       const next = dark ? "light" : "dark"; r.setAttribute("data-theme", next); await setMeta("theme", next);
     } else if (act === "export") {
       await doExport();
+    } else if (act === "import") {
+      doImport();
     } else if (act === "exportReset") {
       await Vault.forgetHandle(); toast("Файл экспорта сброшен — при следующем экспорте выберешь заново");
     } else if (act === "reset") {
@@ -569,14 +628,74 @@ const App = (function () {
       const unsynced = state.transactions.filter((t) => !t.synced);
       for (const t of unsynced) { t.synced = true; await DB.put("transactions", t); }
       render();
-      toast(res.mode === "dir" ? "Экспортировано помесячно в папку vault"
-        : res.mode === "download" ? "Файл сохранён — FolderSync донесёт в vault"
-        : res.mode === "picked" ? "Экспортировано, файл привязан для перезаписи"
+      toast(res.mode === "dir" ? "Экспортировано в папку vault (Финансы — Монетки.json)"
+        : res.mode === "download" ? "Файл .json сохранён — FolderSync донесёт в vault"
+        : res.mode === "picked" ? "Экспортировано, файл .json привязан для перезаписи"
         : "Экспортировано в vault");
     } catch (e) {
       if (e && e.name === "AbortError") return; // пользователь закрыл выбор файла
       console.error(e); toast("Не удалось экспортировать: " + ((e && e.message) || e));
     }
+  }
+
+  // ---------- импорт/восстановление из vault (§4) ----------
+  // Импорт «всего сразу» из единого файла «Финансы — Монетки.json»:
+  //   • десктоп (showDirectoryPicker) — выбираем ПАПКУ vault, читаем файл(ы) за раз
+  //     (JSON приоритетнее; старый .md ещё поддержан ради миграции);
+  //   • телефон — выбор файла; мобильный экспорт и так один совмещённый JSON.
+  // Импорт ЗАМЕНЯЕТ данные приложения целиком.
+  async function doImport() {
+    try {
+      if (typeof window.showDirectoryPicker === "function") {
+        let dir;
+        try { dir = await window.showDirectoryPicker({ mode: "read" }); }
+        catch (e) { if (e && e.name === "AbortError") return; throw e; }
+        const { data, files, format } = await Vault.importFromDir(dir);
+        await applyImport(data, `папки (${files} файл., ${format || "—"})`);
+        return;
+      }
+      // фолбэк — выбор файла(ов); .json (основной) или legacy .md
+      const inp = document.createElement("input");
+      inp.type = "file"; inp.accept = ".json,.md,application/json,text/markdown,text/plain"; inp.multiple = true;
+      inp.onchange = async () => {
+        const files = Array.from(inp.files || []);
+        if (!files.length) return;
+        const texts = await Promise.all(files.map((f) => f.text()));
+        await applyImport(mergeParsed(texts.map((t) => Vault.parseAny(t))), `${files.length} файл.`);
+      };
+      inp.click();
+    } catch (e) { console.error(e); toast("Ошибка импорта: " + ((e && e.message) || e)); }
+  }
+
+  // Слить несколько разобранных снапшотов: счета/категории по имени, операции по
+  // id (иначе по контент-ключу), план — первый ненулевой.
+  function mergeParsed(list) {
+    const accounts = [], categories = [], transactions = [];
+    const accSeen = new Set(), catSeen = new Set(), txSeen = new Set();
+    let plan = null;
+    for (const d of list) {
+      if (plan == null && d.plan != null) plan = d.plan;
+      for (const a of d.accounts || []) if (!accSeen.has(a.name)) { accSeen.add(a.name); accounts.push(a); }
+      for (const c of d.categories || []) if (!catSeen.has(c.name)) { catSeen.add(c.name); categories.push(c); }
+      for (const t of d.transactions || []) {
+        const key = t.id || [t.ts, t.amount, t.cat, t.acc, t.to || "", t.type].join("|");
+        if (!txSeen.has(key)) { txSeen.add(key); transactions.push(t); }
+      }
+    }
+    return { accounts, categories, transactions, plan };
+  }
+
+  async function applyImport(data, sourceLabel) {
+    const n = data.transactions.length, m = data.accounts.length, k = data.categories.length;
+    if (!n && !m && !k) { toast("Не найдено данных Монеток"); return; }
+    if (!confirm(`Импорт из ${sourceLabel}:\nопераций ${n}, счетов ${m}, категорий ${k}.\nТекущие данные будут заменены.`)) return;
+    await DB.clear("transactions"); await DB.clear("accounts"); await DB.clear("categories");
+    if (k) await DB.bulkPut("categories", data.categories);
+    if (m) await DB.bulkPut("accounts", data.accounts);
+    if (n) await DB.bulkPut("transactions", data.transactions);
+    if (data.plan != null) await setMeta("plan", data.plan);
+    await boot(true);
+    toast(`Импортировано: ${n} операций, ${m} счетов, ${k} категорий`);
   }
 
   // ---------- курсы ----------
@@ -600,7 +719,19 @@ const App = (function () {
     state.meta.theme = theme ? theme.value : null;
     if (state.meta.theme) document.documentElement.setAttribute("data-theme", state.meta.theme);
     render();
-    if (!reload) refreshRates(false);
+    if (!reload) {
+      refreshRates(false);
+      // Пустая база (первый запуск или после сброса) — предложить восстановиться
+      // из vault. Один раз за сессию, чтобы не надоедать.
+      let offered = false; try { offered = !!sessionStorage.getItem("importOffered"); } catch (e) {}
+      if (!offered && state.transactions.length === 0) {
+        try { sessionStorage.setItem("importOffered", "1"); } catch (e) {}
+        setTimeout(() => {
+          if (state.transactions.length === 0 &&
+              confirm("В приложении нет операций. Восстановить данные из файла vault (.md)?")) doImport();
+        }, 400);
+      }
+    }
   }
 
   function start() {
