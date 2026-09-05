@@ -157,7 +157,61 @@ const Vault = (function () {
     await DB.del("meta", "vaultDir").catch(() => {});
   }
 
-  return { buildMarkdown, monthMd, accountsMd, categoriesMd, exportVault, capabilities, forgetHandle };
+  // ---- импорт/восстановление из vault (§4) ----
+  // Разбирает Markdown с Dataview-инлайн-полями (формат экспорта выше) обратно в
+  // объекты приложения. Принимает массив текстов файлов (один совмещённый или
+  // помесячные + _Счета + _Категории). id генерируем заново, дубли отсекаем.
+  function parseVault(texts) {
+    const uid = () => (crypto.randomUUID ? crypto.randomUUID()
+      : "id-" + Date.now() + "-" + Math.random().toString(16).slice(2));
+    const num = (v) => { const s = String(v == null ? "" : v).trim().replace(",", "."); if (s === "") return null; const n = parseFloat(s); return isNaN(n) ? null : n; };
+    const accounts = [], categories = [], transactions = [];
+    let ai = 0, ci = 0;
+    const seen = { acc: new Set(), cat: new Set(), tx: new Set() };
+
+    for (const text of [].concat(texts)) {
+      for (const raw of String(text == null ? "" : text).split(/\r?\n/)) {
+        const line = raw.trim();
+        if (line.slice(0, 2) !== "- ") continue;
+        const pairs = {};
+        let m; const re = /\[([a-zA-Z]+)::\s*([^\]]*?)\]/g;
+        while ((m = re.exec(line))) pairs[m[1]] = m[2].trim();
+
+        if ("account" in pairs) {
+          const name = pairs.account; if (!name || seen.acc.has(name)) continue; seen.acc.add(name);
+          accounts.push({
+            id: uid(), name, balance: num(pairs.balance) || 0, currency: pairs.cur || "UAH",
+            kind: pairs.kind || "card", plan: num(pairs.plan),
+            archived: pairs.archived === "true", order: ai++,
+          });
+        } else if ("category" in pairs) {
+          const name = pairs.category; if (!name || seen.cat.has(name)) continue; seen.cat.add(name);
+          categories.push({
+            id: uid(), name, limit: num(pairs.limit), emoji: pairs.emoji || "🪙",
+            group: pairs.group || null, archived: pairs.archived === "true", order: ci++,
+          });
+        } else if ("amount" in pairs) {
+          const amount = num(pairs.amount); if (amount === null) continue;
+          const dm = line.match(/^-\s*(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2})/);
+          const ts = dm ? `${dm[1]}T${dm[2].padStart(5, "0")}:00` : "";
+          const key = [ts, amount, pairs.cat || "", pairs.acc || "", pairs.to || "", pairs.type || ""].join("|");
+          if (seen.tx.has(key)) continue; seen.tx.add(key);
+          const li = line.lastIndexOf("]");
+          const note = li >= 0 ? line.slice(li + 1).trim() : "";
+          const t = {
+            id: uid(), ts, amount, cat: pairs.cat || "", acc: pairs.acc || "",
+            cur: pairs.cur || "UAH", type: pairs.type || "expense", synced: true,
+          };
+          if (pairs.to) t.to = pairs.to;
+          if (note) t.note = note;
+          transactions.push(t);
+        }
+      }
+    }
+    return { accounts, categories, transactions };
+  }
+
+  return { buildMarkdown, monthMd, accountsMd, categoriesMd, exportVault, capabilities, forgetHandle, parseVault };
 })();
 
 window.Vault = Vault;

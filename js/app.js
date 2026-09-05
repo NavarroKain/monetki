@@ -605,6 +605,8 @@ const App = (function () {
       const next = dark ? "light" : "dark"; r.setAttribute("data-theme", next); await setMeta("theme", next);
     } else if (act === "export") {
       await doExport();
+    } else if (act === "import") {
+      doImport();
     } else if (act === "exportReset") {
       await Vault.forgetHandle(); toast("Файл экспорта сброшен — при следующем экспорте выберешь заново");
     } else if (act === "reset") {
@@ -636,6 +638,33 @@ const App = (function () {
     }
   }
 
+  // ---------- импорт/восстановление из vault (§4) ----------
+  // Читает выбранные .md-файлы экспорта (совмещённый или помесячные +
+  // _Счета/_Категории) и ЗАМЕНЯЕТ данные приложения. Работает и на телефоне
+  // (обычный input file), и на десктопе. Мультивыбор — можно указать все файлы.
+  function doImport() {
+    const inp = document.createElement("input");
+    inp.type = "file"; inp.accept = ".md,text/markdown,text/plain"; inp.multiple = true;
+    inp.onchange = async () => {
+      const files = Array.from(inp.files || []);
+      if (!files.length) return;
+      try {
+        const texts = await Promise.all(files.map((f) => f.text()));
+        const data = Vault.parseVault(texts);
+        const n = data.transactions.length, m = data.accounts.length, k = data.categories.length;
+        if (!n && !m && !k) { toast("В файлах не найдено данных Монеток"); return; }
+        if (!confirm(`Импортировать: операций ${n}, счетов ${m}, категорий ${k}?\nТекущие данные в приложении будут заменены.`)) return;
+        await DB.clear("transactions"); await DB.clear("accounts"); await DB.clear("categories");
+        if (k) await DB.bulkPut("categories", data.categories);
+        if (m) await DB.bulkPut("accounts", data.accounts);
+        if (n) await DB.bulkPut("transactions", data.transactions);
+        await boot(true);
+        toast(`Импортировано: ${n} операций, ${m} счетов, ${k} категорий`);
+      } catch (e) { console.error(e); toast("Ошибка импорта: " + ((e && e.message) || e)); }
+    };
+    inp.click();
+  }
+
   // ---------- курсы ----------
   async function refreshRates(force) {
     try {
@@ -657,7 +686,19 @@ const App = (function () {
     state.meta.theme = theme ? theme.value : null;
     if (state.meta.theme) document.documentElement.setAttribute("data-theme", state.meta.theme);
     render();
-    if (!reload) refreshRates(false);
+    if (!reload) {
+      refreshRates(false);
+      // Пустая база (первый запуск или после сброса) — предложить восстановиться
+      // из vault. Один раз за сессию, чтобы не надоедать.
+      let offered = false; try { offered = !!sessionStorage.getItem("importOffered"); } catch (e) {}
+      if (!offered && state.transactions.length === 0) {
+        try { sessionStorage.setItem("importOffered", "1"); } catch (e) {}
+        setTimeout(() => {
+          if (state.transactions.length === 0 &&
+              confirm("В приложении нет операций. Восстановить данные из файла vault (.md)?")) doImport();
+        }, 400);
+      }
+    }
   }
 
   function start() {

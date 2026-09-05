@@ -3,11 +3,12 @@
    Прекеширует оболочку приложения → открывается офлайн, в т.ч. с домашнего экрана (§7).
    Стратегия:
      - навигации (HTML): network-first с фолбэком в кэш → свежий код при сети, оффлайн — из кэша;
-     - остальная статика оболочки (CSS/JS/иконки/манифест): cache-first;
+     - остальная статика оболочки (CSS/JS/иконки/манифест): network-first с докешированием
+       (обновления кода подхватываются сразу при сети, без очистки данных; оффлайн — из кэша);
      - сторонние запросы (курсы Monobank, шрифты): не перехватываем, идут в сеть.
    Данные операций живут в IndexedDB, не тут. */
 
-const CACHE = "monetki-shell-v6";
+const CACHE = "monetki-shell-v7";
 
 // Относительные пути — чтобы работало и в корне, и в подпапке GitHub Pages.
 const SHELL = [
@@ -60,18 +61,16 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
-  // Прочая статика оболочки → cache-first, добираем из сети и докешируем.
+  // Прочая статика оболочки → network-first: свежий код при сети, докешируем;
+  // оффлайн — из кэша. Так обновления подхватываются без очистки данных.
   e.respondWith(
-    caches.match(req).then((cached) => {
-      if (cached) return cached;
-      return fetch(req).then((res) => {
-        if (res && res.ok && res.type === "basic") {
-          const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
-        }
-        return res;
-      });
-    })
+    fetch(req).then((res) => {
+      if (res && res.ok && res.type === "basic") {
+        const copy = res.clone();
+        caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
+      }
+      return res;
+    }).catch(() => caches.match(req))
   );
 });
 
