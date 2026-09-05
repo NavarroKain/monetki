@@ -211,7 +211,23 @@ const Vault = (function () {
     return { accounts, categories, transactions };
   }
 
-  return { buildMarkdown, monthMd, accountsMd, categoriesMd, exportVault, capabilities, forgetHandle, parseVault };
+  // Имя файла похоже на экспорт Монеток? (чтобы в папке-vault не цеплять чужой .md)
+  function isVaultFile(name) {
+    return /^Финансы — .+\.md$/i.test(name) || name === "_Счета.md" || name === "_Категории.md";
+  }
+
+  // Прочитать все файлы-экспорты из выбранной папки и распарсить разом.
+  async function importFromDir(dir) {
+    const texts = [];
+    for await (const handle of dir.values()) {
+      if (handle.kind === "file" && isVaultFile(handle.name)) {
+        try { const f = await handle.getFile(); texts.push(await f.text()); } catch (e) { /* пропускаем нечитаемый */ }
+      }
+    }
+    return { data: parseVault(texts), files: texts.length };
+  }
+
+  return { buildMarkdown, monthMd, accountsMd, categoriesMd, exportVault, capabilities, forgetHandle, parseVault, importFromDir };
 })();
 
 window.Vault = Vault;
