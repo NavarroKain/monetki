@@ -27,6 +27,10 @@ html,body{overscroll-behavior-y:none}
 body{margin:0;background:var(--bg);color:var(--ink);
   font-family:"Manrope",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   -webkit-tap-highlight-color:transparent;}
+/* Кнопки: убрать задержку double-tap и не давать жесту превратиться в скролл; без выделения текста */
+button{touch-action:manipulation;user-select:none;-webkit-user-select:none}
+/* Блокировка скролла фона при открытом листе — чтобы тап по цифрам не «крался» прокруткой */
+html.modal-open,body.modal-open{overflow:hidden}
 .app{max-width:460px;margin:0 auto;min-height:100vh;padding:14px 14px 96px;position:relative}
 .top{display:flex;align-items:center;justify-content:space-between;margin:4px 2px 12px}
 .month{font-size:19px;font-weight:800;letter-spacing:-.01em}
@@ -67,7 +71,7 @@ body{margin:0;background:var(--bg);color:var(--ink);
 .sheet{position:fixed;left:0;right:0;bottom:0;z-index:40;background:var(--surface);border-radius:22px 22px 0 0;
   padding:10px 16px calc(18px + env(safe-area-inset-bottom));box-shadow:var(--sheet-shadow);
   transform:translateY(100%);transition:transform .26s cubic-bezier(.2,.8,.2,1);max-width:460px;margin:0 auto;
-  max-height:92vh;overflow-y:auto}
+  max-height:92vh;overflow-y:auto;overscroll-behavior:contain}
 .sheet.on{transform:translateY(0)}
 .grip{width:40px;height:4px;border-radius:2px;background:var(--line);margin:2px auto 12px}
 .modes{display:flex;gap:6px;margin-bottom:14px}

@@ -15,6 +15,7 @@ const App = (function () {
   const $ = (id) => document.getElementById(id);
   const uid = () => (crypto.randomUUID ? crypto.randomUUID()
     : "id-" + Date.now() + "-" + Math.random().toString(16).slice(2));
+  const round2 = (n) => Math.round(n * 100) / 100;
 
   // ---------- форматирование ----------
   const f0 = (n) => new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(Math.round(n));
@@ -138,6 +139,7 @@ const App = (function () {
       const label = isT ? `${esc(t.acc)} → ${esc(t.to)}` : esc(t.cat);
       const r = document.createElement("div"); r.className = "rrow";
       r.innerHTML = `<div><div class="l">${label}</div><div class="s">${esc(t.acc)}${isT ? "" : " · " + (t.ts || "").slice(5, 10).replace("-", ".")}</div></div><b style="color:${col}">${sign}${f2(Math.abs(t.amount))} ${curSym(t.cur)}</b>`;
+      r.onclick = () => editOperation(t);
       rec.appendChild(r);
     }
   }
@@ -158,8 +160,22 @@ const App = (function () {
   }
   async function adj(name, delta) {
     const a = accByName(name); if (!a) return;
-    a.balance = Math.round((a.balance + delta) * 100) / 100;
+    a.balance = round2(a.balance + delta);
     await DB.put("accounts", a);
+  }
+  // Влияние операции на балансы: dir=+1 применить, dir=-1 откатить (в памяти).
+  function balanceApply(t, dir) {
+    if (t.type === "transfer") {
+      const from = accByName(t.acc), to = accByName(t.to);
+      if (from) from.balance = round2(from.balance + dir * t.amount);       // amount < 0
+      if (to) to.balance = round2(to.balance + dir * (-t.amount));
+    } else {
+      const a = accByName(t.acc);
+      if (a) a.balance = round2(a.balance + dir * t.amount);                 // expense<0, income>0
+    }
+  }
+  async function persistAccounts(names) {
+    for (const n of [...new Set(names.filter(Boolean))]) { const a = accByName(n); if (a) await DB.put("accounts", a); }
   }
   async function setMeta(key, value) { state.meta[key] = value; await DB.put("meta", { key, value }); }
 
@@ -180,8 +196,8 @@ const App = (function () {
     buildSheet();
     openScrim(); sheet.classList.add("on");
   }
-  function openScrim() { scrim.classList.add("on"); }
-  function closeAll() { scrim.classList.remove("on"); sheet.classList.remove("on"); editor.classList.remove("on"); }
+  function openScrim() { scrim.classList.add("on"); document.documentElement.classList.add("modal-open"); document.body.classList.add("modal-open"); }
+  function closeAll() { scrim.classList.remove("on"); sheet.classList.remove("on"); editor.classList.remove("on"); document.documentElement.classList.remove("modal-open"); document.body.classList.remove("modal-open"); }
   scrim.onclick = closeAll;
 
   function chip(text, on, onclick, extra) {
@@ -460,6 +476,64 @@ const App = (function () {
     });
   }
 
+  // ---------- редактор операции (#2) ----------
+  const optTag = (v, sel) => `<option value="${esc(v)}"${sel ? " selected" : ""}>${esc(v)}</option>`;
+  function editOperation(t) {
+    const type = t.type;
+    const absv = Math.abs(t.amount);
+    const dateVal = (t.ts || "").slice(0, 16);
+    const title = type === "expense" ? "Расход" : type === "income" ? "Доход" : "Перевод";
+    let body = `<div class="form"><div style="font-weight:800;font-size:16px;margin-bottom:2px">Операция · ${title}</div>`;
+    if (type === "expense") {
+      body += `<label>Категория</label><select class="input" id="eCat">${activeCats().map((c) => optTag(c.name, c.name === t.cat)).join("")}</select>`;
+      body += `<label>Счёт</label><select class="input" id="eAcc">${realAccounts().map((a) => optTag(a.name, a.name === t.acc)).join("")}</select>`;
+    } else if (type === "income") {
+      body += `<label>Источник</label><select class="input" id="eInc">${incomeSources().map((a) => optTag(a.name, a.name === t.cat)).join("")}</select>`;
+      body += `<label>Счёт</label><select class="input" id="eAcc">${realAccounts().map((a) => optTag(a.name, a.name === t.acc)).join("")}</select>`;
+    } else {
+      body += `<label>Со счёта</label><select class="input" id="eAcc">${realAccounts().map((a) => optTag(a.name, a.name === t.acc)).join("")}</select>`;
+      body += `<label>На счёт</label><select class="input" id="eTo">${realAccounts().map((a) => optTag(a.name, a.name === t.to)).join("")}</select>`;
+    }
+    body += `<label>Сумма</label><input class="input" id="eAmt" inputmode="decimal" value="${absv}">`;
+    body += `<label>Дата и время</label><input class="input" id="eDate" type="datetime-local" value="${dateVal}">`;
+    if (type !== "transfer") body += `<label>Заметка</label><input class="input" id="eNote" value="${esc(t.note || "")}" placeholder="необязательно">`;
+    body += `<div class="form-actions"><button class="btn danger" id="eDel">Удалить</button><button class="btn ghost" id="eCancel">Отмена</button><button class="btn primary" id="eSave">Сохранить</button></div></div>`;
+    openEditor(body, () => {
+      $("eCancel").onclick = closeAll;
+      $("eDel").onclick = async () => {
+        if (!confirm("Удалить эту операцию? Баланс вернётся к прежнему.")) return;
+        balanceApply(t, -1);
+        await persistAccounts([t.acc, t.to]);
+        state.transactions = state.transactions.filter((x) => x.id !== t.id);
+        await DB.del("transactions", t.id);
+        closeAll(); render(); toast("Операция удалена");
+      };
+      $("eSave").onclick = async () => {
+        const v = Math.abs(parseFloat($("eAmt").value.trim().replace(",", ".")) || 0);
+        if (v <= 0) { toast("Введи сумму"); return; }
+        const oldNames = [t.acc, t.to];
+        balanceApply(t, -1); // откат старого влияния
+        if (type === "expense") {
+          t.cat = $("eCat").value; t.acc = $("eAcc").value; t.amount = -v; t.cur = accByName(t.acc).currency;
+          t.note = $("eNote").value.trim() || undefined;
+        } else if (type === "income") {
+          t.cat = $("eInc").value; t.acc = $("eAcc").value; t.amount = v; t.cur = accByName(t.acc).currency;
+          t.note = $("eNote").value.trim() || undefined;
+        } else {
+          const from = $("eAcc").value, to = $("eTo").value;
+          if (from === to) { balanceApply(t, 1); toast("Счета совпадают"); return; }
+          t.acc = from; t.to = to; t.amount = -v; t.cur = accByName(from).currency;
+        }
+        const d = $("eDate").value; if (d) t.ts = d.length === 16 ? d + ":00" : d;
+        t.synced = false;
+        balanceApply(t, 1); // применить новое влияние
+        await persistAccounts([...oldNames, t.acc, t.to]);
+        await DB.put("transactions", t);
+        closeAll(); render(); toast("Операция изменена");
+      };
+    });
+  }
+
   // ---------- меню ----------
   const menu = $("menu");
   $("menuBtn").onclick = (e) => { e.stopPropagation(); menu.classList.toggle("on"); };
@@ -495,7 +569,8 @@ const App = (function () {
       const unsynced = state.transactions.filter((t) => !t.synced);
       for (const t of unsynced) { t.synced = true; await DB.put("transactions", t); }
       render();
-      toast(res.mode === "download" ? "Файл сохранён — FolderSync донесёт в vault"
+      toast(res.mode === "dir" ? "Экспортировано помесячно в папку vault"
+        : res.mode === "download" ? "Файл сохранён — FolderSync донесёт в vault"
         : res.mode === "picked" ? "Экспортировано, файл привязан для перезаписи"
         : "Экспортировано в vault");
     } catch (e) {
