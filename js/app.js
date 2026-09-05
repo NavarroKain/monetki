@@ -106,7 +106,7 @@ const App = (function () {
         <div class="cname">${esc(c.name)}</div>
         <div class="cspent" style="color:${st.txt}">${sp ? f0(sp) : 0}</div>
         <div class="climit">${c.limit ? "/ " + f0(c.limit) : "·"}</div>`;
-      bindPress(b, () => openSheet("expense", c.name), () => editCategory(c));
+      bindPress(b, () => showOperations("category", c.name), () => editCategory(c));
       coins.appendChild(b);
     }
     // «＋ новая категория»
@@ -120,7 +120,7 @@ const App = (function () {
     for (const a of realAccounts()) {
       const d = document.createElement("button"); d.className = "acc";
       d.innerHTML = `<div class="dot">${curSym(a.currency)}</div><div class="an">${esc(a.name)}</div><div class="ab">${f2(a.balance)} ${curSym(a.currency)}</div>`;
-      bindPress(d, () => editAccount(a), () => editAccount(a));
+      bindPress(d, () => showOperations("account", a.name), () => editAccount(a));
       accs.appendChild(d);
     }
     const addA = document.createElement("button"); addA.className = "acc add";
@@ -132,16 +132,20 @@ const App = (function () {
     const rec = $("recent"); rec.innerHTML = "";
     const items = state.transactions.slice().sort((a, b) => (a.ts < b.ts ? 1 : -1)).slice(0, 7);
     if (!items.length) rec.innerHTML = `<div class="rrow"><span class="s">Пока пусто — тапни монетку категории</span></div>`;
-    for (const t of items) {
-      const isT = t.type === "transfer";
-      const col = isT ? "var(--muted)" : (t.amount < 0 ? "var(--red)" : "var(--coin-green)");
-      const sign = isT ? "" : (t.amount < 0 ? "−" : "+");
-      const label = isT ? `${esc(t.acc)} → ${esc(t.to)}` : esc(t.cat);
-      const r = document.createElement("div"); r.className = "rrow";
-      r.innerHTML = `<div><div class="l">${label}</div><div class="s">${esc(t.acc)}${isT ? "" : " · " + (t.ts || "").slice(5, 10).replace("-", ".")}</div></div><b style="color:${col}">${sign}${f2(Math.abs(t.amount))} ${curSym(t.cur)}</b>`;
-      r.onclick = () => editOperation(t);
-      rec.appendChild(r);
-    }
+    for (const t of items) rec.appendChild(opRow(t, true));
+  }
+
+  // строка операции для списков (последние операции, список по объекту)
+  function opRow(t, withDate) {
+    const isT = t.type === "transfer";
+    const col = isT ? "var(--muted)" : (t.amount < 0 ? "var(--red)" : "var(--coin-green)");
+    const sign = isT ? "" : (t.amount < 0 ? "−" : "+");
+    const label = isT ? `${esc(t.acc)} → ${esc(t.to)}` : esc(t.cat);
+    const date = withDate && !isT ? " · " + (t.ts || "").slice(5, 10).replace("-", ".") : "";
+    const r = document.createElement("div"); r.className = "rrow";
+    r.innerHTML = `<div><div class="l">${label}</div><div class="s">${esc(t.acc)}${date}</div></div><b style="color:${col}">${sign}${f2(Math.abs(t.amount))} ${curSym(t.cur)}</b>`;
+    r.onclick = () => editOperation(t);
+    return r;
   }
 
   function esc(s) { return String(s).replace(/[&<>"]/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m])); }
@@ -531,6 +535,53 @@ const App = (function () {
         await DB.put("transactions", t);
         closeAll(); render(); toast("Операция изменена");
       };
+    });
+  }
+
+  // ---------- список операций по объекту (категория / счёт) ----------
+  const txMonth = (t) => (t.ts || "").slice(0, 7);
+  function showOperations(kind, name) {
+    let items, emoji, subtitle, total, totalColor, addLabel = null;
+    if (kind === "category") {
+      const c = catByName(name);
+      items = state.transactions.filter((t) => t.type === "expense" && t.cat === name && txMonth(t) === MONTH);
+      emoji = c ? c.emoji : "🪙";
+      subtitle = "Расходы · " + monthTitle();
+      total = spentOf(name);
+      totalColor = total > 0 ? "var(--red)" : "var(--muted)";
+      addLabel = "＋ Добавить расход";
+    } else {
+      const a = accByName(name);
+      items = state.transactions.filter((t) => (t.acc === name || t.to === name) && txMonth(t) === MONTH);
+      emoji = a ? curSym(a.currency) : "•";
+      subtitle = "Обороты · " + monthTitle();
+      let net = 0;
+      for (const t of items) net += (t.acc === name ? t.amount : -t.amount);
+      total = net;
+      totalColor = net < 0 ? "var(--red)" : net > 0 ? "var(--coin-green)" : "var(--muted)";
+    }
+    items.sort((a, b) => (a.ts < b.ts ? 1 : -1));
+    const totalStr = (kind === "category")
+      ? f0(total) + " ₴"
+      : (total > 0 ? "+" : total < 0 ? "−" : "") + f0(Math.abs(total)) + (accByName(name) ? " " + curSym(accByName(name).currency) : "");
+
+    openEditor(`
+      <div class="form">
+        <div class="sheet-head" style="margin-bottom:12px">
+          <div class="em" style="background:var(--surface-2)">${esc(emoji)}</div>
+          <div><div class="t" style="font-weight:800;color:var(--ink);font-size:15px">${esc(name)}</div><div class="t">${subtitle}</div></div>
+          <div class="amt" style="font-size:22px;color:${totalColor}">${totalStr}</div>
+        </div>
+        ${addLabel ? `<button class="save" id="opAdd" style="margin-top:0;margin-bottom:12px">${addLabel}</button>` : ""}
+        <div class="recent" id="opList"></div>
+        <div class="form-actions"><button class="btn ghost" id="eCancel">Закрыть</button></div>
+      </div>`, () => {
+      $("eCancel").onclick = closeAll;
+      const add = $("opAdd");
+      if (add) add.onclick = () => openSheet("expense", name);
+      const list = $("opList");
+      if (!items.length) list.innerHTML = `<div class="rrow"><span class="s">Нет операций за этот месяц</span></div>`;
+      else for (const t of items) list.appendChild(opRow(t, true));
     });
   }
 
