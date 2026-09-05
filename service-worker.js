@@ -7,7 +7,7 @@
      - сторонние запросы (курсы Monobank, шрифты): не перехватываем, идут в сеть.
    Данные операций живут в IndexedDB, не тут. */
 
-const CACHE = "monetki-shell-v1";
+const CACHE = "monetki-shell-v2";
 
 // Относительные пути — чтобы работало и в корне, и в подпапке GitHub Pages.
 const SHELL = [
@@ -18,6 +18,7 @@ const SHELL = [
   "./js/seed.js",
   "./js/db.js",
   "./js/rates.js",
+  "./js/vault.js",
   "./js/app.js",
   "./icons/icon-192.png",
   "./icons/icon-512.png",

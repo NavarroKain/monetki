@@ -472,8 +472,10 @@ const App = (function () {
       const r = document.documentElement, cur = r.getAttribute("data-theme");
       const dark = cur ? cur === "dark" : matchMedia("(prefers-color-scheme:dark)").matches;
       const next = dark ? "light" : "dark"; r.setAttribute("data-theme", next); await setMeta("theme", next);
-    } else if (act === "sync") {
-      toast("Синхронизация с vault — Фаза 2 (прослойка ещё не настроена)");
+    } else if (act === "export") {
+      await doExport();
+    } else if (act === "exportReset") {
+      await Vault.forgetHandle(); toast("Файл экспорта сброшен — при следующем экспорте выберешь заново");
     } else if (act === "reset") {
       if (confirm("Сбросить ВСЕ данные к начальным? Операции будут удалены.")) {
         await DB.resetAll(); await boot(true); toast("Данные сброшены");
@@ -484,6 +486,23 @@ const App = (function () {
   // ---------- тост ----------
   let toastT;
   function toast(m) { const el = $("toast"); el.textContent = m; el.classList.add("on"); clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove("on"), 1900); }
+
+  // ---------- экспорт в vault (§4, §6) ----------
+  async function doExport() {
+    try {
+      const res = await Vault.exportVault(state);
+      // Полный снапшот ушёл в vault — помечаем все операции синхронизированными.
+      const unsynced = state.transactions.filter((t) => !t.synced);
+      for (const t of unsynced) { t.synced = true; await DB.put("transactions", t); }
+      render();
+      toast(res.mode === "download" ? "Файл сохранён — FolderSync донесёт в vault"
+        : res.mode === "picked" ? "Экспортировано, файл привязан для перезаписи"
+        : "Экспортировано в vault");
+    } catch (e) {
+      if (e && e.name === "AbortError") return; // пользователь закрыл выбор файла
+      console.error(e); toast("Не удалось экспортировать: " + ((e && e.message) || e));
+    }
+  }
 
   // ---------- курсы ----------
   async function refreshRates(force) {
