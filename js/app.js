@@ -200,9 +200,13 @@ const App = (function () {
     buildSheet();
     openScrim(); sheet.classList.add("on");
   }
-  function openScrim() { scrim.classList.add("on"); document.documentElement.classList.add("modal-open"); document.body.classList.add("modal-open"); }
+  // Защита от «фантомного» click, который мобильные браузеры шлют вслед за тапом:
+  // модалка открывается по pointerup, следом прилетает click в ту же точку — уже
+  // по scrim — и мгновенно её закрывает. Игнорируем клики по scrim сразу после открытия.
+  let scrimGuardUntil = 0;
+  function openScrim() { scrim.classList.add("on"); document.documentElement.classList.add("modal-open"); document.body.classList.add("modal-open"); scrimGuardUntil = Date.now() + 450; }
   function closeAll() { scrim.classList.remove("on"); sheet.classList.remove("on"); editor.classList.remove("on"); document.documentElement.classList.remove("modal-open"); document.body.classList.remove("modal-open"); }
-  scrim.onclick = closeAll;
+  scrim.onclick = () => { if (Date.now() < scrimGuardUntil) return; closeAll(); };
 
   function chip(text, on, onclick, extra) {
     const b = document.createElement("button");
