@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<title>Монетки</title>
+<meta name="description" content="Быстрый учёт личных финансов. Работает офлайн.">
+<meta name="theme-color" content="#2fbf93">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Монетки">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="app" id="app">
+  <div class="top">
+    <div class="month" id="month">Месяц</div>
+    <div class="topbtns">
+      <span class="rate" id="rate" title="Курс к гривне">курс…</span>
+      <span class="sync" id="sync" title="Синхронизация с хранилищем"><span class="d"></span><span id="syncTxt">—</span></span>
+      <button class="iconbtn" id="menuBtn" aria-label="Меню">⋯</button>
+    </div>
+    <div class="menu" id="menu">
+      <button data-act="incomes">Источники доходов</button>
+      <button data-act="plan">Изменить план месяца</button>
+      <button data-act="theme">Сменить тему</button>
+      <button data-act="sync">Синхронизировать сейчас</button>
+      <button data-act="reset">Сбросить все данные</button>
+    </div>
+  </div>
+
+  <div class="tiles">
+    <div class="tile"><div class="k">Баланс</div><div class="v" id="tBal">—</div></div>
+    <div class="tile"><div class="k">Расходы</div><div class="v red" id="tExp">—</div></div>
+    <div class="tile"><div class="k">План</div><div class="v" id="tPlan">—</div></div>
+  </div>
+
+  <div class="section">Категории — тап записать, удержание изменить</div>
+  <div class="grid" id="coins"></div>
+
+  <div class="section">Счета</div>
+  <div class="accrow" id="accs"></div>
+
+  <div class="section">Последние операции</div>
+  <div class="recent" id="recent"></div>
+</div>
+
+<div class="fab">
+  <button class="mini" id="btnTransfer">⇄ Перевод</button>
+  <button class="add" id="btnAdd" aria-label="Добавить расход">+</button>
+  <button class="mini" id="btnIncome">＋ Доход</button>
+</div>
+
+<div class="scrim" id="scrim"></div>
+
+<!-- Лист ввода операции -->
+<div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="Ввод операции">
+  <div class="grip"></div>
+  <div class="modes" id="modes">
+    <button data-m="expense" class="on">Расход</button>
+    <button data-m="income">Доход</button>
+    <button data-m="transfer">Перевод</button>
+    <button data-m="balance">Баланс</button>
+  </div>
+  <div class="sheet-head">
+    <div class="em" id="shEm" style="background:var(--coin-grey)">🛒</div>
+    <div><div class="t" id="shTitle">Категория</div><div class="t" id="shSub" style="font-weight:700;color:var(--ink)">Продукты</div></div>
+    <div class="amt" id="shAmt">0</div>
+  </div>
+  <div id="pickWrap" style="display:none"><div class="field" id="pickLabel">Категория</div><div class="chips" id="pickChips"></div></div>
+  <div class="field" id="accLabel">Счёт</div>
+  <div class="chips" id="accChips"></div>
+  <div id="toWrap" style="display:none"><div class="field">На счёт</div><div class="chips" id="toChips"></div></div>
+  <div class="pad" id="pad"></div>
+  <button class="save" id="save">Сохранить</button>
+</div>
+
+<!-- Лист редактора справочников (категория/счёт/доход/план/список) -->
+<div class="sheet" id="editor" role="dialog" aria-modal="true" aria-label="Редактор">
+  <div class="grip"></div>
+  <div id="editorBody"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="js/seed.js"></script>
+<script src="js/db.js"></script>
+<script src="js/rates.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

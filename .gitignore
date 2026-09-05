@@ -1,0 +1,11 @@
+# Локальные секреты и личные оверрайды — НЕ коммитить
+config.local.js
+seed.local.js
+.env
+
+# ОС/редакторы
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+node_modules/
