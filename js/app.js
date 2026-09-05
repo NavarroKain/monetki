@@ -198,6 +198,7 @@ const App = (function () {
     selBalAcc = (realAccounts()[0] && realAccounts()[0].name) || null;
     document.querySelectorAll("#modes button").forEach((b) => b.classList.toggle("on", b.dataset.m === m));
     buildSheet();
+    editor.classList.remove("on"); // не наслаивать лист ввода на редактор/список
     openScrim(); sheet.classList.add("on");
   }
   // Защита от «фантомного» click, который мобильные браузеры шлют вслед за тапом:
@@ -317,6 +318,7 @@ const App = (function () {
   function openEditor(html, wire) {
     $("editorBody").innerHTML = html;
     if (wire) wire();
+    sheet.classList.remove("on"); // не наслаивать редактор/список на лист ввода
     openScrim(); editor.classList.add("on");
   }
 
