@@ -628,9 +628,9 @@ const App = (function () {
       const unsynced = state.transactions.filter((t) => !t.synced);
       for (const t of unsynced) { t.synced = true; await DB.put("transactions", t); }
       render();
-      toast(res.mode === "dir" ? "Экспортировано помесячно в папку vault"
-        : res.mode === "download" ? "Файл сохранён — FolderSync донесёт в vault"
-        : res.mode === "picked" ? "Экспортировано, файл привязан для перезаписи"
+      toast(res.mode === "dir" ? "Экспортировано в папку vault (Финансы — Монетки.json)"
+        : res.mode === "download" ? "Файл .json сохранён — FolderSync донесёт в vault"
+        : res.mode === "picked" ? "Экспортировано, файл .json привязан для перезаписи"
         : "Экспортировано в vault");
     } catch (e) {
       if (e && e.name === "AbortError") return; // пользователь закрыл выбор файла
@@ -639,10 +639,10 @@ const App = (function () {
   }
 
   // ---------- импорт/восстановление из vault (§4) ----------
-  // Импорт «всего сразу»:
-  //   • десктоп (showDirectoryPicker) — выбираем ПАПКУ vault, читаем все файлы
-  //     экспорта (помесячные + _Счета + _Категории или совмещённый) за один раз;
-  //   • телефон — выбор файла(ов); мобильный экспорт и так один совмещённый файл.
+  // Импорт «всего сразу» из единого файла «Финансы — Монетки.json»:
+  //   • десктоп (showDirectoryPicker) — выбираем ПАПКУ vault, читаем файл(ы) за раз
+  //     (JSON приоритетнее; старый .md ещё поддержан ради миграции);
+  //   • телефон — выбор файла; мобильный экспорт и так один совмещённый JSON.
   // Импорт ЗАМЕНЯЕТ данные приложения целиком.
   async function doImport() {
     try {
@@ -650,21 +650,39 @@ const App = (function () {
         let dir;
         try { dir = await window.showDirectoryPicker({ mode: "read" }); }
         catch (e) { if (e && e.name === "AbortError") return; throw e; }
-        const { data, files } = await Vault.importFromDir(dir);
-        await applyImport(data, `папки (${files} файл.)`);
+        const { data, files, format } = await Vault.importFromDir(dir);
+        await applyImport(data, `папки (${files} файл., ${format || "—"})`);
         return;
       }
-      // фолбэк — выбор файла(ов)
+      // фолбэк — выбор файла(ов); .json (основной) или legacy .md
       const inp = document.createElement("input");
-      inp.type = "file"; inp.accept = ".md,text/markdown,text/plain"; inp.multiple = true;
+      inp.type = "file"; inp.accept = ".json,.md,application/json,text/markdown,text/plain"; inp.multiple = true;
       inp.onchange = async () => {
         const files = Array.from(inp.files || []);
         if (!files.length) return;
         const texts = await Promise.all(files.map((f) => f.text()));
-        await applyImport(Vault.parseVault(texts), `${files.length} файл.`);
+        await applyImport(mergeParsed(texts.map((t) => Vault.parseAny(t))), `${files.length} файл.`);
       };
       inp.click();
     } catch (e) { console.error(e); toast("Ошибка импорта: " + ((e && e.message) || e)); }
+  }
+
+  // Слить несколько разобранных снапшотов: счета/категории по имени, операции по
+  // id (иначе по контент-ключу), план — первый ненулевой.
+  function mergeParsed(list) {
+    const accounts = [], categories = [], transactions = [];
+    const accSeen = new Set(), catSeen = new Set(), txSeen = new Set();
+    let plan = null;
+    for (const d of list) {
+      if (plan == null && d.plan != null) plan = d.plan;
+      for (const a of d.accounts || []) if (!accSeen.has(a.name)) { accSeen.add(a.name); accounts.push(a); }
+      for (const c of d.categories || []) if (!catSeen.has(c.name)) { catSeen.add(c.name); categories.push(c); }
+      for (const t of d.transactions || []) {
+        const key = t.id || [t.ts, t.amount, t.cat, t.acc, t.to || "", t.type].join("|");
+        if (!txSeen.has(key)) { txSeen.add(key); transactions.push(t); }
+      }
+    }
+    return { accounts, categories, transactions, plan };
   }
 
   async function applyImport(data, sourceLabel) {
@@ -675,6 +693,7 @@ const App = (function () {
     if (k) await DB.bulkPut("categories", data.categories);
     if (m) await DB.bulkPut("accounts", data.accounts);
     if (n) await DB.bulkPut("transactions", data.transactions);
+    if (data.plan != null) await setMeta("plan", data.plan);
     await boot(true);
     toast(`Импортировано: ${n} операций, ${m} счетов, ${k} категорий`);
   }
