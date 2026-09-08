@@ -221,10 +221,8 @@ const App = (function () {
     // курс
     $("rate").textContent = Rates.label(state.meta.rates);
 
-    // индикатор синка
-    const n = unsyncedCount(), sync = $("sync");
-    sync.className = "sync" + (n > 0 ? " pending" : " ok");
-    $("syncTxt").textContent = n > 0 ? (n + " не синхр.") : "синхр.";
+    // индикатор синка (см. renderSync — учитывает Drive/офлайн/состояние заливки)
+    renderSync();
 
     // монетки категорий
     const coins = $("coins"); coins.innerHTML = "";
@@ -280,16 +278,16 @@ const App = (function () {
   function esc(s) { return String(s).replace(/[&<>"]/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m])); }
 
   // ---------- persistence ----------
-  async function putTx(t) { state.transactions.push(t); await DB.put("transactions", t); }
+  async function putTx(t) { state.transactions.push(t); await DB.put("transactions", t); scheduleSync(); }
   async function putAcc(a) {
     const i = state.accounts.findIndex((x) => x.id === a.id);
     if (i >= 0) state.accounts[i] = a; else state.accounts.push(a);
-    await DB.put("accounts", a);
+    await DB.put("accounts", a); scheduleSync();
   }
   async function putCat(c) {
     const i = state.categories.findIndex((x) => x.id === c.id);
     if (i >= 0) state.categories[i] = c; else state.categories.push(c);
-    await DB.put("categories", c);
+    await DB.put("categories", c); scheduleSync();
   }
   async function adj(name, delta) {
     const a = accByName(name); if (!a) return;
@@ -432,7 +430,7 @@ const App = (function () {
         toast(`${selAcc} → ${selTo}: ${f2(v)}`);
       }
     }
-    closeAll(); render();
+    closeAll(); render(); scheduleSync();
   };
 
   document.querySelectorAll("#modes button").forEach((b) => b.onclick = () => { openSheet(b.dataset.m, selCat); });
@@ -441,13 +439,15 @@ const App = (function () {
   $("btnIncome").onclick = () => openSheet("income");
   $("btnTransfer").onclick = () => openSheet("transfer");
 
-  // Клик по индикатору синхронизации → экспорт в файл vault (быстрый ручной синк).
+  // Клик по индикатору синхронизации → ручной флаш. Если подключён Google Drive —
+  // заливаем снапшот в файл vault; иначе фолбэк на файловый экспорт (десктоп/без Drive).
   const syncEl = $("sync");
-  syncEl.title = "Экспорт в файл vault";
+  syncEl.title = "Синхронизировать сейчас";
   syncEl.setAttribute("role", "button");
   syncEl.setAttribute("tabindex", "0");
-  syncEl.onclick = (e) => { e.stopPropagation(); doExport(); };
-  syncEl.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); doExport(); } });
+  const syncNow = () => { if (GDrive.isConnected()) flushToDrive(true); else doExport(); };
+  syncEl.onclick = (e) => { e.stopPropagation(); syncNow(); };
+  syncEl.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); syncNow(); } });
 
   // ---------- редакторы справочников (§5b) ----------
   const EMOJIS = ["🛒","🍔","🚌","🛍️","🏠","🎬","🧰","🎁","💊","🏋️","🧾","🏢","🧥","💱","🪙","📊","☕","⛽","📱","✈️","🎓","💡","🎵","💳","💰","🐶","🚗","🍺"];
@@ -499,7 +499,7 @@ const App = (function () {
       if (del) del.onclick = async () => {
         if (hasTx) { c.archived = true; await putCat(c); toast("Категория скрыта"); }
         else { state.categories = state.categories.filter((x) => x.id !== c.id); await DB.del("categories", c.id); toast("Категория удалена"); }
-        closeAll(); render();
+        closeAll(); render(); scheduleSync();
       };
     });
   }
@@ -545,7 +545,7 @@ const App = (function () {
       if (del) del.onclick = async () => {
         if (hasTx) { a.archived = true; await putAcc(a); toast("Счёт скрыт"); }
         else { state.accounts = state.accounts.filter((x) => x.id !== a.id); await DB.del("accounts", a.id); toast("Счёт удалён"); }
-        closeAll(); render();
+        closeAll(); render(); scheduleSync();
       };
     });
   }
@@ -578,7 +578,7 @@ const App = (function () {
       if (del) del.onclick = async () => {
         if (hasTx) { a.archived = true; await putAcc(a); toast("Источник скрыт"); }
         else { state.accounts = state.accounts.filter((x) => x.id !== a.id); await DB.del("accounts", a.id); toast("Источник удалён"); }
-        closeAll(); render();
+        closeAll(); render(); scheduleSync();
       };
     });
   }
@@ -618,7 +618,7 @@ const App = (function () {
       $("eCancel").onclick = closeAll;
       $("eSave").onclick = async () => {
         await setMeta("plan", Math.round(parseFloat($("ePlan").value.trim().replace(",", ".")) || 0));
-        closeAll(); render(); toast("План обновлён");
+        closeAll(); render(); scheduleSync(); toast("План обновлён");
       };
     });
   }
@@ -653,7 +653,7 @@ const App = (function () {
         await persistAccounts([t.acc, t.to]);
         state.transactions = state.transactions.filter((x) => x.id !== t.id);
         await DB.del("transactions", t.id);
-        closeAll(); render(); toast("Операция удалена");
+        closeAll(); render(); scheduleSync(); toast("Операция удалена");
       };
       $("eSave").onclick = async () => {
         const v = Math.abs(parseFloat($("eAmt").value.trim().replace(",", ".")) || 0);
@@ -676,7 +676,7 @@ const App = (function () {
         balanceApply(t, 1); // применить новое влияние
         await persistAccounts([...oldNames, t.acc, t.to]);
         await DB.put("transactions", t);
-        closeAll(); render(); toast("Операция изменена");
+        closeAll(); render(); scheduleSync(); toast("Операция изменена");
       };
     });
   }
@@ -730,11 +730,13 @@ const App = (function () {
 
   // ---------- меню ----------
   const menu = $("menu");
-  $("menuBtn").onclick = (e) => { e.stopPropagation(); menu.classList.toggle("on"); };
+  $("menuBtn").onclick = (e) => { e.stopPropagation(); updateDriveMenu(); menu.classList.toggle("on"); };
   document.body.addEventListener("click", () => menu.classList.remove("on"));
   menu.querySelectorAll("button").forEach((b) => b.onclick = async () => {
     const act = b.dataset.act;
-    if (act === "incomes") manageIncomes();
+    if (act === "gdrive") connectDrive();
+    else if (act === "gdriveOff") disconnectDrive();
+    else if (act === "incomes") manageIncomes();
     else if (act === "plan") editPlan();
     else if (act === "theme") {
       const r = document.documentElement, cur = r.getAttribute("data-theme");
@@ -756,6 +758,103 @@ const App = (function () {
   // ---------- тост ----------
   let toastT;
   function toast(m) { const el = $("toast"); el.textContent = m; el.classList.add("on"); clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove("on"), 1900); }
+
+  // ---------- синхронизация с Google Drive (автосинк) ----------
+  // IndexedDB — источник истины; здесь только push снапшота в привязанный файл vault.
+  // Дебаунс после изменений + флаш по online / возврату вкладки. Офлайн не блокируем —
+  // операции копятся (synced:false), доливаются при появлении сети/фокуса.
+  let syncTimer = null;      // таймер дебаунса
+  let syncSuspended = true;  // true во время boot/import — не дёргать синк
+  let syncState = "idle";    // "idle" | "syncing" | "error" (транзиентно, для индикатора)
+  let driveDirty = false;    // снапшот изменился с последней успешной заливки
+  const SYNC_DEBOUNCE = 3500;
+
+  function friendly(e) {
+    const m = (e && e.message) || String(e);
+    if (/cancelled/i.test(m)) return "отменено";
+    if (/access_denied|popup|interaction_required|consent|login_required/i.test(m)) return "нужно переподключить Google";
+    return m;
+  }
+
+  // Запланировать отложенную заливку после изменения данных (дебаунс).
+  function scheduleSync() {
+    if (syncSuspended || !GDrive.isConnected()) return;
+    driveDirty = true;
+    renderSync();
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => flushToDrive(false), SYNC_DEBOUNCE);
+  }
+
+  // Залить снапшот в Drive. manual=true — ручной «Синк сейчас» (тосты/принудительно).
+  async function flushToDrive(manual) {
+    if (!GDrive.isConnected()) { if (manual) toast("Google Drive не подключён"); return false; }
+    if (!navigator.onLine) { if (manual) toast("Нет сети — синхронизирую позже"); renderSync(); return false; }
+    if (!manual && !driveDirty && unsyncedCount() === 0) return false;
+    clearTimeout(syncTimer);
+    syncState = "syncing"; renderSync();
+    try {
+      await GDrive.push(Vault.buildJSON(state));
+      // Снапшот целиком ушёл в vault — помечаем операции синхронизированными.
+      const unsynced = state.transactions.filter((t) => !t.synced);
+      for (const t of unsynced) { t.synced = true; await DB.put("transactions", t); }
+      driveDirty = false; syncState = "idle"; renderSync();
+      if (manual) toast("Синхронизировано с Google Drive");
+      return true;
+    } catch (e) {
+      console.error(e); syncState = "error"; renderSync();
+      toast("Синк не удался: " + friendly(e)); // данные не теряем — попробуем позже
+      return false;
+    }
+  }
+
+  // Индикатор синка: синхронизировано / N не синхр. / офлайн / без Drive / синк… / ошибка.
+  function renderSync() {
+    const el = $("sync"), txt = $("syncTxt");
+    if (!el || !txt) return;
+    const n = unsyncedCount();
+    el.className = "sync";
+    if (syncState === "syncing") { el.classList.add("syncing"); txt.textContent = "синк…"; return; }
+    if (syncState === "error") { el.classList.add("error"); txt.textContent = n > 0 ? (n + " не синхр.") : "ошибка синка"; return; }
+    if (!navigator.onLine) { el.classList.add("offline"); txt.textContent = n > 0 ? (n + " офлайн") : "офлайн"; return; }
+    if (GDrive.isConfigured() && !GDrive.isConnected()) {
+      el.classList.add(n > 0 ? "pending" : "nolink");
+      txt.textContent = n > 0 ? (n + " не синхр.") : "без Drive";
+      return;
+    }
+    if (n > 0) { el.classList.add("pending"); txt.textContent = n + " не синхр."; return; }
+    el.classList.add("ok"); txt.textContent = "синхр.";
+  }
+
+  // Пункт меню «Подключить Google Drive»: консент + выбор файла/папки, затем первая заливка.
+  async function connectDrive() {
+    if (!GDrive.isConfigured()) { toast("Нет ключей Google — добавь config.local.js"); return; }
+    try {
+      toast("Открываю Google…");
+      await GDrive.connect();
+      updateDriveMenu(); renderSync();
+      toast("Google Drive подключён");
+      await flushToDrive(true); // первичная заливка текущего снапшота
+    } catch (e) {
+      if (e && e.message === "cancelled") return;
+      console.error(e); toast("Не удалось подключить: " + friendly(e));
+    }
+  }
+
+  async function disconnectDrive() {
+    await GDrive.disconnect();
+    updateDriveMenu(); renderSync();
+    toast("Google Drive отключён");
+  }
+
+  // Показ/подписи пунктов меню Drive по состоянию подключения.
+  function updateDriveMenu() {
+    const m = $("menu"); if (!m) return;
+    const on = m.querySelector('[data-act="gdrive"]');
+    const off = m.querySelector('[data-act="gdriveOff"]');
+    const configured = GDrive.isConfigured(), connected = GDrive.isConnected();
+    if (on) { on.hidden = !configured; on.textContent = connected ? "Переподключить Google Drive" : "Подключить Google Drive"; }
+    if (off) off.hidden = !connected;
+  }
 
   // ---------- экспорт в vault (§4, §6) ----------
   async function doExport() {
@@ -845,7 +944,9 @@ const App = (function () {
 
   // ---------- загрузка ----------
   async function boot(reload) {
+    syncSuspended = true; // не дёргать синк, пока грузимся/импортируемся
     await DB.ensureSeeded();
+    await GDrive.load(); // восстановить привязку к файлу Drive (fileId в meta)
     const [accounts, categories, transactions, plan, rates, theme] = await Promise.all([
       DB.getAll("accounts"), DB.getAll("categories"), DB.getAll("transactions"),
       DB.get("meta", "plan"), DB.get("meta", "rates"), DB.get("meta", "theme"),
@@ -856,6 +957,11 @@ const App = (function () {
     state.meta.theme = theme ? theme.value : null;
     if (state.meta.theme) document.documentElement.setAttribute("data-theme", state.meta.theme);
     render();
+    updateDriveMenu();
+    syncSuspended = false; // готовы — можно синкать
+    // Догоняющая заливка: если подключён Drive и есть несинхронизированное с прошлой
+    // (возможно, офлайн) сессии — дольём в фоне. flushToDrive сам проверит сеть/очередь.
+    if (GDrive.isConnected()) flushToDrive(false);
     // Автопредложение импорта при пустой базе убрано: надоедало при каждом
     // холодном старте PWA. Восстановление — вручную через меню «Импорт из vault».
     if (!reload) refreshRates(false);
@@ -867,7 +973,10 @@ const App = (function () {
     if ("serviceWorker" in navigator) {
       window.addEventListener("load", () => navigator.serviceWorker.register("service-worker.js").catch(() => {}));
     }
-    window.addEventListener("online", () => refreshRates(true));
+    window.addEventListener("online", () => { refreshRates(true); renderSync(); flushToDrive(false); });
+    window.addEventListener("offline", () => renderSync());
+    // Возврат вкладки в фокус — хороший момент долить накопившееся.
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") flushToDrive(false); });
   }
 
   return { start, _state: state };

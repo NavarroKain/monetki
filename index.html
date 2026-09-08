@@ -29,6 +29,8 @@
       <button class="iconbtn" id="menuBtn" aria-label="Меню">⋯</button>
     </div>
     <div class="menu" id="menu">
+      <button data-act="gdrive">Подключить Google Drive</button>
+      <button data-act="gdriveOff" hidden>Отключить Google Drive</button>
       <button data-act="export">Экспорт в vault</button>
       <button data-act="import">Импорт из vault</button>
       <button data-act="exportReset">Сменить файл экспорта</button>
@@ -97,6 +99,10 @@
 <script src="js/db.js"></script>
 <script src="js/rates.js"></script>
 <script src="js/vault.js"></script>
+<!-- Локальные ключи Google (в .gitignore). Должны загрузиться ПЕРЕД gdrive.js и app.js.
+     Если файла нет (напр. не залит на хостинг) — Drive-синк просто выключен, приложение работает. -->
+<script src="config.local.js"></script>
+<script src="js/gdrive.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>
