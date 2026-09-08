@@ -1,0 +1,58 @@
+name: Deploy to GitHub Pages
+
+# Деплой «Монеток» на GitHub Pages с подстановкой ключей Google из Secrets.
+# config.local.js в репозиторий не коммитится (в .gitignore) — он создаётся здесь,
+# на раннере, из секретов GDRIVE_CLIENT_ID / GDRIVE_API_KEY и попадает только в
+# опубликованный сайт. Так ключи не лежат в публичной истории git.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Не гоняем параллельные деплои.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Inject Google keys → config.local.js
+        env:
+          GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          GDRIVE_API_KEY: ${{ secrets.GDRIVE_API_KEY }}
+        run: |
+          cat > config.local.js <<EOF
+          window.GDRIVE_CONFIG = {
+            clientId: "${GDRIVE_CLIENT_ID}",
+            apiKey:   "${GDRIVE_API_KEY}",
+            scope:    "https://www.googleapis.com/auth/drive.file",
+            fileName: "Финансы — Монетки.json",
+          };
+          EOF
+          if [ -n "$GDRIVE_CLIENT_ID" ]; then echo "config.local.js создан, clientId задан"; else echo "ВНИМАНИЕ: секрет GDRIVE_CLIENT_ID пуст — добавь его в Settings → Secrets"; fi
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
