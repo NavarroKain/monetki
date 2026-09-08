@@ -857,7 +857,7 @@ const App = (function () {
         try { sessionStorage.setItem("importOffered", "1"); } catch (e) {}
         setTimeout(() => {
           if (state.transactions.length === 0 &&
-              confirm("В приложении нет операций. Восстановить данные из файла vault (.md)?")) doImport();
+              confirm("В приложении нет операций. Восстановить данные из файла vault (Финансы — Монетки.json)?")) doImport();
         }, 400);
       }
     }
