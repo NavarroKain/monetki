@@ -81,6 +81,135 @@ const App = (function () {
     el.addEventListener("pointerleave", () => clearTimeout(timer));
   }
 
+  // ---------- drag-ввод: перетаскивание счёта на категорию/счёт (бриф drag) ----------
+  // Константы — дефолты Android ViewConfiguration, вынесены в конфиг для тюнинга.
+  const DND = {
+    TOUCH_SLOP: 8,   // px — порог начала движения (меньше — дрожание, игнорируем)
+    LONG_PRESS: 500, // мс — удержание «поднимает» монетку (drag в любую сторону)
+  };
+
+  // true пока монетка «поднята» или тащится — на это время гасим нативный скролл.
+  let dragActive = false;
+  // Скролл ряда счетов останавливаем только когда идёт наш жест; обычный
+  // горизонтальный скролл (dragActive=false) работает как раньше.
+  document.addEventListener("touchmove", (e) => { if (dragActive) e.preventDefault(); }, { passive: false });
+
+  // Валидные цели дропа: монетки категорий (#coins) и счета (#accs), кроме источника.
+  function dropTargets() {
+    return [...document.querySelectorAll("#coins .coin-wrap[data-cat], #accs .acc[data-acc]")];
+  }
+
+  // Жест на монетке счёта: тап → onTap, удержание-на-месте → onHold (редактор),
+  // удержание-и-повёл / сдвиг вверх → drag на категорию (расход) или счёт (перевод).
+  function bindAccountGesture(el, accName, onTap, onHold) {
+    let timer = null, lifted = false, dragging = false, moved = false, canceled = false;
+    let sx = 0, sy = 0, pid = null, ghost = null, overEl = null;
+
+    function highlightAll(on) {
+      dropTargets().forEach((t) => {
+        if (t.dataset.acc === accName) return;        // сам источник — не цель
+        t.classList.toggle("drop-target", on);
+      });
+    }
+    function makeGhost() {
+      const g = el.cloneNode(true);
+      g.className = "acc drag-ghost";
+      g.style.width = el.offsetWidth + "px";
+      document.body.appendChild(g);
+      return g;
+    }
+    function moveGhost(x, y) { if (ghost) { ghost.style.left = x + "px"; ghost.style.top = y + "px"; } }
+    function hitTest(x, y) {
+      // ghost с pointer-events:none — elementFromPoint его игнорирует.
+      const under = document.elementFromPoint(x, y);
+      if (!under) return null;
+      const cat = under.closest("#coins .coin-wrap[data-cat]");
+      if (cat) return { kind: "category", name: cat.dataset.cat, el: cat };
+      const acc = under.closest("#accs .acc[data-acc]");
+      if (acc && acc.dataset.acc !== accName) return { kind: "account", name: acc.dataset.acc, el: acc };
+      return null;                                    // мимо или на себя
+    }
+    function startDrag(x, y) {
+      dragging = true; dragActive = true;
+      try { el.setPointerCapture(pid); } catch (e) {}
+      el.classList.add("drag-src");
+      ghost = makeGhost(); moveGhost(x, y);
+      highlightAll(true);
+      if (navigator.vibrate) navigator.vibrate(12);   // отклик при захвате
+    }
+    function setOver(newOver) {
+      if (newOver === overEl) return;
+      if (overEl) overEl.classList.remove("drop-over");
+      if (newOver) { newOver.classList.add("drop-over"); if (navigator.vibrate) navigator.vibrate(8); }
+      overEl = newOver;
+    }
+    function endDrag(hit) {
+      if (ghost) { ghost.remove(); ghost = null; }
+      highlightAll(false); setOver(null);
+      el.classList.remove("drag-src");
+      dragging = false; lifted = false; dragActive = false;
+      if (!hit) return;                               // мимо цели / на себя → отмена
+      if (hit.kind === "category") openSheetForDrop(accName, "category", hit.name);
+      else openSheetForDrop(accName, "account", hit.name);
+    }
+    function cleanup() {
+      clearTimeout(timer);
+      if (dragging) { if (ghost) { ghost.remove(); ghost = null; } highlightAll(false); setOver(null); el.classList.remove("drag-src"); }
+      lifted = false; dragging = false; dragActive = false;
+    }
+
+    el.addEventListener("contextmenu", (e) => e.preventDefault());
+    el.addEventListener("pointerdown", (e) => {
+      if (e.button != null && e.button > 0) return;
+      lifted = false; dragging = false; moved = false; canceled = false;
+      sx = e.clientX; sy = e.clientY; pid = e.pointerId;
+      timer = setTimeout(() => {                       // долгое удержание «поднимает» монетку
+        lifted = true; dragActive = true;             // скролл замирает — можно вести в любую сторону
+        if (navigator.vibrate) navigator.vibrate(12);
+      }, DND.LONG_PRESS);
+    });
+    el.addEventListener("pointermove", (e) => {
+      if (e.pointerId !== pid || canceled) return;
+      if (dragging) {
+        moveGhost(e.clientX, e.clientY);
+        const hit = hitTest(e.clientX, e.clientY);
+        setOver(hit ? hit.el : null);
+        e.preventDefault();
+        return;
+      }
+      const dx = e.clientX - sx, dy = e.clientY - sy;
+      const adx = Math.abs(dx), ady = Math.abs(dy);
+      if (adx < DND.TOUCH_SLOP && ady < DND.TOUCH_SLOP) return;  // дрожание — ждём
+      if (lifted) { clearTimeout(timer); startDrag(e.clientX, e.clientY); return; }  // поднято → тащим
+      if (dy < 0 && ady > adx) {                        // сдвиг вверх к категориям → сразу drag
+        clearTimeout(timer); startDrag(e.clientX, e.clientY);
+      } else {                                          // вбок/вниз → это скролл ряда, не наш жест
+        clearTimeout(timer); moved = true; canceled = true;
+      }
+    });
+    el.addEventListener("pointerup", (e) => {
+      if (e.pointerId !== pid) return;
+      clearTimeout(timer);
+      if (dragging) { endDrag(hitTest(e.clientX, e.clientY)); return; }
+      if (lifted) { lifted = false; dragActive = false; onHold(); return; }  // подняли и отпустили на месте → редактор
+      if (!moved && !canceled) onTap();
+    });
+    el.addEventListener("pointercancel", (e) => { if (e.pointerId === pid) { cleanup(); canceled = true; } });
+  }
+
+  // Открыть лист ввода с предвыбором из drag'а. Сумму пользователь вводит сам.
+  function openSheetForDrop(source, targetKind, targetName) {
+    if (targetKind === "category") {
+      selAcc = source;                 // openSheet сохранит валидный selAcc
+      openSheet("expense", targetName);
+    } else {                           // счёт → счёт: перевод
+      selAcc = source;
+      openSheet("transfer");           // внутри selTo сбрасывается
+      selTo = targetName;
+      buildSheet();                    // перерисовать чипы под выбранные счета
+    }
+  }
+
   // ---------- рендер ----------
   function render() {
     $("month").textContent = monthTitle();
@@ -101,7 +230,7 @@ const App = (function () {
     const coins = $("coins"); coins.innerHTML = "";
     for (const c of activeCats()) {
       const sp = spentOf(c.name), st = coinStyle(sp, c.limit);
-      const b = document.createElement("button"); b.className = "coin-wrap";
+      const b = document.createElement("button"); b.className = "coin-wrap"; b.dataset.cat = c.name;
       b.innerHTML = `<div class="coin" style="background:${st.bg}">${st.fill > 0 && st.fill < 100 ? `<div class="fill" style="height:${st.fill}%;background:${st.fillc}"></div>` : ""}<span class="em">${c.emoji}</span></div>
         <div class="cname">${esc(c.name)}</div>
         <div class="cspent" style="color:${st.txt}">${sp ? f0(sp) : 0}</div>
@@ -118,9 +247,9 @@ const App = (function () {
     // счета
     const accs = $("accs"); accs.innerHTML = "";
     for (const a of realAccounts()) {
-      const d = document.createElement("button"); d.className = "acc";
+      const d = document.createElement("button"); d.className = "acc"; d.dataset.acc = a.name;
       d.innerHTML = `<div class="dot">${curSym(a.currency)}</div><div class="an">${esc(a.name)}</div><div class="ab">${f2(a.balance)} ${curSym(a.currency)}</div>`;
-      bindPress(d, () => showOperations("account", a.name), () => editAccount(a));
+      bindAccountGesture(d, a.name, () => showOperations("account", a.name), () => editAccount(a));
       accs.appendChild(d);
     }
     const addA = document.createElement("button"); addA.className = "acc add";

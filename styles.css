@@ -54,7 +54,9 @@ html.modal-open,body.modal-open{overflow:hidden}
 .climit{font-size:10px;color:var(--faint);line-height:1}
 .accrow{display:flex;gap:8px;overflow-x:auto;padding:2px 2px 6px;margin:0 -2px 6px;scrollbar-width:none}
 .accrow::-webkit-scrollbar{display:none}
-.acc{flex:0 0 auto;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:9px 12px;min-width:112px;box-shadow:var(--shadow);cursor:pointer;font-family:inherit;color:inherit;text-align:left}
+/* touch-action:pan-x — горизонтальный скролл ряда остаётся нативным, вертикальный
+   жест (сдвиг вверх → drag на категорию) достаётся нам */
+.acc{flex:0 0 auto;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:9px 12px;min-width:112px;box-shadow:var(--shadow);cursor:pointer;font-family:inherit;color:inherit;text-align:left;touch-action:pan-x}
 .acc .an{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px}
 .acc .ab{font-size:15px;font-weight:800;font-variant-numeric:tabular-nums;margin-top:2px}
 .acc .dot{width:22px;height:22px;border-radius:50%;background:var(--yellow);display:inline-flex;align-items:center;justify-content:center;font-size:12px;margin-bottom:5px}
@@ -146,4 +148,15 @@ html.modal-open,body.modal-open{overflow:hidden}
 .rrow{display:flex;justify-content:space-between;align-items:center;padding:9px 2px;border-bottom:1px solid var(--line);font-size:13px;cursor:pointer}
 .rrow .l{color:var(--ink)}.rrow .s{font-size:11px;color:var(--faint)}
 .rrow b{font-variant-numeric:tabular-nums}
+/* ---- drag-ввод (перетаскивание счёта на категорию/счёт) ---- */
+/* «призрак» — плавающая копия монетки счёта под пальцем */
+.drag-ghost{position:fixed;left:0;top:0;z-index:3000;pointer-events:none;
+  transform:translate(-50%,-50%) scale(1.06);opacity:.95;
+  box-shadow:0 10px 30px rgba(0,0,0,.4)}
+/* источник — приглушаем, пока тащим */
+.acc.drag-src{opacity:.35}
+/* валидные цели подсвечиваем, текущую под пальцем — сильнее */
+.drop-target{outline:2px dashed var(--accent);outline-offset:2px}
+#coins .coin-wrap.drop-target,#coins .coin-wrap.drop-over{border-radius:14px}
+.drop-over{outline:3px solid var(--accent);outline-offset:2px;background:color-mix(in srgb,var(--accent) 14%,transparent)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
