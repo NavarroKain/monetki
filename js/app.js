@@ -441,6 +441,14 @@ const App = (function () {
   $("btnIncome").onclick = () => openSheet("income");
   $("btnTransfer").onclick = () => openSheet("transfer");
 
+  // Клик по индикатору синхронизации → экспорт в файл vault (быстрый ручной синк).
+  const syncEl = $("sync");
+  syncEl.title = "Экспорт в файл vault";
+  syncEl.setAttribute("role", "button");
+  syncEl.setAttribute("tabindex", "0");
+  syncEl.onclick = (e) => { e.stopPropagation(); doExport(); };
+  syncEl.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); doExport(); } });
+
   // ---------- редакторы справочников (§5b) ----------
   const EMOJIS = ["🛒","🍔","🚌","🛍️","🏠","🎬","🧰","🎁","💊","🏋️","🧾","🏢","🧥","💱","🪙","📊","☕","⛽","📱","✈️","🎓","💡","🎵","💳","💰","🐶","🚗","🍺"];
 
@@ -848,19 +856,9 @@ const App = (function () {
     state.meta.theme = theme ? theme.value : null;
     if (state.meta.theme) document.documentElement.setAttribute("data-theme", state.meta.theme);
     render();
-    if (!reload) {
-      refreshRates(false);
-      // Пустая база (первый запуск или после сброса) — предложить восстановиться
-      // из vault. Один раз за сессию, чтобы не надоедать.
-      let offered = false; try { offered = !!sessionStorage.getItem("importOffered"); } catch (e) {}
-      if (!offered && state.transactions.length === 0) {
-        try { sessionStorage.setItem("importOffered", "1"); } catch (e) {}
-        setTimeout(() => {
-          if (state.transactions.length === 0 &&
-              confirm("В приложении нет операций. Восстановить данные из файла vault (Финансы — Монетки.json)?")) doImport();
-        }, 400);
-      }
-    }
+    // Автопредложение импорта при пустой базе убрано: надоедало при каждом
+    // холодном старте PWA. Восстановление — вручную через меню «Импорт из vault».
+    if (!reload) refreshRates(false);
   }
 
   function start() {
