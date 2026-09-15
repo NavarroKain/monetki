@@ -765,7 +765,7 @@ const App = (function () {
   // операции копятся (synced:false), доливаются при появлении сети/фокуса.
   let syncTimer = null;      // таймер дебаунса
   let syncSuspended = true;  // true во время boot/import — не дёргать синк
-  let syncState = "idle";    // "idle" | "syncing" | "error" (транзиентно, для индикатора)
+  let syncState = "idle";    // "idle" | "syncing" | "error" | "auth" (для индикатора)
   let driveDirty = false;    // снапшот изменился с последней успешной заливки
   const SYNC_DEBOUNCE = 3500;
 
@@ -785,7 +785,22 @@ const App = (function () {
     syncTimer = setTimeout(() => flushToDrive(false), SYNC_DEBOUNCE);
   }
 
-  // Залить снапшот в Drive. manual=true — ручной «Синк сейчас» (тосты/принудительно).
+  // Одна попытка заливки. Токен берётся тихо; если истёк и manual — открываем вход в
+  // Google (БЕЗ Picker, файл уже привязан) и повторяем. Затем помечаем операции.
+  async function pushOnce(manual) {
+    const json = Vault.buildJSON(state);
+    try {
+      await GDrive.push(json);
+    } catch (e) {
+      if (manual && GDrive.isAuthError(e)) { await GDrive.reauth(); await GDrive.push(json); }
+      else throw e;
+    }
+    const unsynced = state.transactions.filter((t) => !t.synced);
+    for (const t of unsynced) { t.synced = true; await DB.put("transactions", t); }
+  }
+
+  // Залить снапшот в Drive. manual=true — ручной «Синк сейчас»: тосты + вход при истёкшем
+  // токене. Фоновый (manual=false) не шумит: при истёкшем токене тихо ждёт ручного синка.
   async function flushToDrive(manual) {
     if (!GDrive.isConnected()) { if (manual) toast("Google Drive не подключён"); return false; }
     if (!navigator.onLine) { if (manual) toast("Нет сети — синхронизирую позже"); renderSync(); return false; }
@@ -793,16 +808,15 @@ const App = (function () {
     clearTimeout(syncTimer);
     syncState = "syncing"; renderSync();
     try {
-      await GDrive.push(Vault.buildJSON(state));
-      // Снапшот целиком ушёл в vault — помечаем операции синхронизированными.
-      const unsynced = state.transactions.filter((t) => !t.synced);
-      for (const t of unsynced) { t.synced = true; await DB.put("transactions", t); }
+      await pushOnce(manual);
       driveDirty = false; syncState = "idle"; renderSync();
       if (manual) toast("Синхронизировано с Google Drive");
       return true;
     } catch (e) {
-      console.error(e); syncState = "error"; renderSync();
-      toast("Синк не удался: " + friendly(e)); // данные не теряем — попробуем позже
+      console.error(e);
+      syncState = GDrive.isAuthError(e) ? "auth" : "error"; renderSync();
+      // Данные не теряем — операции остаются в очереди. Тост только при ручном синке.
+      if (manual) toast(syncState === "auth" ? "Не удалось войти в Google" : "Синк не удался: " + friendly(e));
       return false;
     }
   }
@@ -814,8 +828,9 @@ const App = (function () {
     const n = unsyncedCount();
     el.className = "sync";
     if (syncState === "syncing") { el.classList.add("syncing"); txt.textContent = "синк…"; return; }
-    if (syncState === "error") { el.classList.add("error"); txt.textContent = n > 0 ? (n + " не синхр.") : "ошибка синка"; return; }
     if (!navigator.onLine) { el.classList.add("offline"); txt.textContent = n > 0 ? (n + " офлайн") : "офлайн"; return; }
+    if (syncState === "auth") { el.classList.add("nolink"); txt.textContent = "вход в Google"; return; }
+    if (syncState === "error") { el.classList.add("error"); txt.textContent = n > 0 ? (n + " не синхр.") : "ошибка синка"; return; }
     if (GDrive.isConfigured() && !GDrive.isConnected()) {
       el.classList.add(n > 0 ? "pending" : "nolink");
       txt.textContent = n > 0 ? (n + " не синхр.") : "без Drive";

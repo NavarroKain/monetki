@@ -78,20 +78,31 @@ const GDrive = (function () {
     }
   }
 
-  // interactive:false → тихий рефреш (prompt:"none"), без UI. Отклоняется, если нужен консент.
+  // Ошибка получения токена — помечаем code:"auth", чтобы вызывающий отличил её от
+  // сетевых/HTTP-ошибок и мог предложить вход в Google (без повторного выбора файла).
+  function authErr(msg) { return Object.assign(new Error(msg || "auth"), { code: "auth" }); }
+  function isAuthError(e) { return !!(e && e.code === "auth"); }
+
+  // interactive:false → тихий рефреш (prompt:"none"), без UI. Отклоняется (code:"auth"),
+  // если нужен вход/консент. interactive:true → показать окно Google (вход/консент).
   function getToken(interactive) {
     if (accessToken && Date.now() < tokenExp - 60000) return Promise.resolve(accessToken);
     return ensureGis().then(() => new Promise((res, rej) => {
       tokenClient.callback = (resp) => {
-        if (resp && resp.error) { rej(new Error(resp.error)); return; }
+        if (resp && resp.error) { rej(authErr(resp.error)); return; }
+        if (!resp || !resp.access_token) { rej(authErr("no_token")); return; }
         accessToken = resp.access_token;
         tokenExp = Date.now() + ((resp.expires_in ? resp.expires_in : 3600) * 1000);
         res(accessToken);
       };
       try { tokenClient.requestAccessToken({ prompt: interactive ? "" : "none" }); }
-      catch (e) { rej(e); }
+      catch (e) { rej(authErr((e && e.message) || "token")); }
     }));
   }
+
+  // Интерактивный вход в Google БЕЗ Picker (файл уже привязан) — для обновления
+  // протухшего токена. Возвращает токен или бросает code:"auth", если вход отменён.
+  function reauth() { return getToken(true); }
 
   // ---- Google Picker ----
   async function ensurePicker() {
@@ -199,7 +210,7 @@ const GDrive = (function () {
     accessToken = null; tokenExp = 0;
   }
 
-  return { isConfigured, isConnected, fileName, getBinding, load, connect, push, disconnect };
+  return { isConfigured, isConnected, fileName, getBinding, load, connect, push, reauth, isAuthError, disconnect };
 })();
 
 window.GDrive = GDrive;
