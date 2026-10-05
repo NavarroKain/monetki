@@ -31,7 +31,11 @@ body{margin:0;background:var(--bg);color:var(--ink);
 button{touch-action:manipulation;user-select:none;-webkit-user-select:none}
 /* Блокировка скролла фона при открытом листе — чтобы тап по цифрам не «крался» прокруткой */
 html.modal-open,body.modal-open{overflow:hidden}
-.app{max-width:460px;margin:0 auto;min-height:100vh;padding:14px 14px 96px;position:relative}
+/* Главный экран ровно в высоту окна, без вертикального скролла: шапка и плитки сверху,
+   страницы категорий занимают остаток до дока (--dock-h выставляет JS по факту высоты дока) */
+html,body{overflow:hidden;height:100%}
+.app{max-width:460px;margin:0 auto;height:100vh;height:100dvh;display:flex;flex-direction:column;
+  padding:14px 14px calc(var(--dock-h,150px) + 6px);position:relative}
 .top{display:flex;align-items:center;justify-content:space-between;margin:4px 2px 12px}
 .month{font-size:19px;font-weight:800;letter-spacing:-.01em}
 .rate{font-size:10px;font-weight:700;color:var(--faint);
@@ -42,7 +46,16 @@ html.modal-open,body.modal-open{overflow:hidden}
 .tile .v{font-size:16px;font-weight:800;margin-top:3px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
 .tile .v.red{color:var(--red)}
 .section{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin:6px 2px 10px;font-weight:700}
-.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px 4px;margin-bottom:20px}
+/* Страницы категорий: горизонтальный скролл с доводкой по странице */
+.pages{flex:1;min-height:0;display:flex;overflow-x:auto;overflow-y:hidden;scroll-snap-type:x mandatory;
+  scrollbar-width:none;overscroll-behavior-x:contain;margin:0 -14px;touch-action:pan-x}
+.pages::-webkit-scrollbar{display:none}
+.cpage{flex:0 0 100%;scroll-snap-align:start;scroll-snap-stop:always;display:grid;grid-template-columns:repeat(4,1fr);
+  gap:14px 4px;align-content:space-evenly;padding:6px 14px}
+.cdots{display:flex;justify-content:center;gap:2px;min-height:16px;align-items:center}
+.cdot{width:20px;height:16px;border:0;background:none;padding:0;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.cdot::after{content:"";width:6px;height:6px;border-radius:50%;background:var(--line);transition:width .2s,background .2s}
+.cdot.on::after{width:16px;border-radius:3px;background:var(--accent)}
 .coin-wrap{display:flex;flex-direction:column;align-items:center;gap:5px;background:none;border:0;padding:0;cursor:pointer;font-family:inherit;color:inherit;touch-action:manipulation}
 .coin{width:60px;height:60px;border-radius:50%;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow);transition:transform .12s}
 .coin-wrap:active .coin{transform:scale(.9)}
@@ -52,21 +65,28 @@ html.modal-open,body.modal-open{overflow:hidden}
 .cname{font-size:11px;line-height:1.1;max-width:74px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink)}
 .cspent{font-size:12px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1}
 .climit{font-size:10px;color:var(--faint);line-height:1}
-.accrow{display:flex;gap:8px;overflow-x:auto;padding:2px 2px 6px;margin:0 -2px 6px;scrollbar-width:none}
+.accrow{display:flex;gap:8px;overflow-x:auto;padding:2px 2px 4px;margin:0 -2px;scrollbar-width:none}
 .accrow::-webkit-scrollbar{display:none}
 /* touch-action:pan-x — горизонтальный скролл ряда остаётся нативным, вертикальный
    жест (сдвиг вверх → drag на категорию) достаётся нам */
-.acc{flex:0 0 auto;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:9px 12px;min-width:112px;box-shadow:var(--shadow);cursor:pointer;font-family:inherit;color:inherit;text-align:left;touch-action:pan-x}
+/* Карточка счёта компактная (живёт в доке): кружок валюты слева, имя и баланс справа */
+.acc{flex:0 0 auto;display:grid;grid-template-columns:auto 1fr;column-gap:7px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:7px 11px 7px 8px;min-width:104px;box-shadow:var(--shadow);cursor:pointer;font-family:inherit;color:inherit;text-align:left;touch-action:pan-x}
 .acc .an{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px}
-.acc .ab{font-size:15px;font-weight:800;font-variant-numeric:tabular-nums;margin-top:2px}
-.acc .dot{width:22px;height:22px;border-radius:50%;background:var(--yellow);display:inline-flex;align-items:center;justify-content:center;font-size:12px;margin-bottom:5px}
+.acc .ab{font-size:14px;font-weight:800;font-variant-numeric:tabular-nums;margin-top:1px;white-space:nowrap}
+.acc .dot{grid-row:span 2;width:26px;height:26px;border-radius:50%;background:var(--yellow);display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:#3b2c00}
 .acc.income .dot{background:var(--blue)}
-.acc.add{display:flex;flex-direction:column;justify-content:center;align-items:center;min-width:56px;color:var(--muted);border-style:dashed;font-size:24px}
+.acc.add{display:flex;flex-direction:column;justify-content:center;align-items:center;min-width:56px;color:var(--muted);border-style:dashed;font-size:20px;box-shadow:none}
+.acc.add .an{font-size:10px}
 
-.fab{position:fixed;left:50%;transform:translateX(-50%);bottom:20px;z-index:20;display:flex;gap:10px;align-items:center}
-.fab button{border:0;font-family:inherit;cursor:pointer;box-shadow:var(--sheet-shadow)}
-.fab .add{width:60px;height:60px;border-radius:50%;background:var(--accent);color:#053;font-size:32px;font-weight:700;display:flex;align-items:center;justify-content:center}
-.fab .mini{height:46px;border-radius:999px;background:var(--surface);color:var(--ink);border:1px solid var(--line)!important;padding:0 15px;font-size:13px;font-weight:700}
+/* Док: счета + кнопки ввода, закреплён внизу поверх прокручиваемых категорий */
+.dock{position:fixed;left:0;right:0;bottom:0;z-index:20;max-width:460px;margin:0 auto;
+  background:var(--surface);border-top:1px solid var(--line);border-radius:20px 20px 0 0;
+  box-shadow:0 -6px 24px rgba(17,24,39,.10);padding:8px 12px calc(10px + env(safe-area-inset-bottom))}
+.dock-hint{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);font-weight:700;margin:0 2px 6px}
+.fab{display:flex;gap:10px;align-items:center;justify-content:center;margin-top:8px}
+.fab button{border:0;font-family:inherit;cursor:pointer}
+.fab .add{width:52px;height:52px;box-shadow:var(--shadow);border-radius:50%;background:var(--accent);color:#053;font-size:32px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.fab .mini{height:42px;border-radius:999px;background:var(--surface);color:var(--ink);border:1px solid var(--line)!important;padding:0 15px;font-size:13px;font-weight:700}
 
 .scrim{position:fixed;inset:0;background:rgba(8,10,14,.5);opacity:0;pointer-events:none;transition:opacity .2s;z-index:30}
 .scrim.on{opacity:1;pointer-events:auto}
@@ -75,6 +95,8 @@ html.modal-open,body.modal-open{overflow:hidden}
   transform:translateY(100%);transition:transform .26s cubic-bezier(.2,.8,.2,1);max-width:460px;margin:0 auto;
   max-height:92vh;overflow-y:auto;overscroll-behavior:contain}
 .sheet.on{transform:translateY(0)}
+/* тень спрятанного листа не должна выглядывать из-под нижнего края */
+.sheet:not(.on){box-shadow:none}
 .grip{width:40px;height:4px;border-radius:2px;background:var(--line);margin:2px auto 12px}
 .modes{display:flex;gap:6px;margin-bottom:14px}
 .modes button{flex:1;border:0;border-radius:11px;padding:8px 4px;font-family:inherit;font-size:12px;font-weight:700;background:var(--surface-2);color:var(--muted);cursor:pointer}
@@ -124,7 +146,7 @@ html.modal-open,body.modal-open{overflow:hidden}
 .litem .ln{font-weight:700;font-size:14px}
 .litem .ls{font-size:12px;color:var(--faint);margin-left:auto;font-variant-numeric:tabular-nums}
 
-.toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%) translateY(20px);background:var(--ink);color:var(--bg);
+.toast{position:fixed;left:50%;bottom:calc(var(--dock-h,150px) + 12px);transform:translateX(-50%) translateY(20px);background:var(--ink);color:var(--bg);
   padding:10px 16px;border-radius:12px;font-size:13px;font-weight:700;opacity:0;transition:.22s;z-index:60;box-shadow:var(--sheet-shadow);white-space:nowrap}
 .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
 
@@ -133,6 +155,7 @@ html.modal-open,body.modal-open{overflow:hidden}
 .menu button{display:block;width:100%;text-align:left;border:0;background:none;color:var(--ink);font-family:inherit;font-size:14px;padding:12px 16px;cursor:pointer}
 .menu button[hidden]{display:none}
 .menu button:active{background:var(--surface-2)}
+.menu button.sep{border-top:1px solid var(--line);color:var(--muted)}
 .iconbtn{border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:12px;width:38px;height:38px;font-size:18px;cursor:pointer}
 
 /* индикатор несинхронизированного (§7) */
@@ -172,3 +195,21 @@ html.modal-open,body.modal-open{overflow:hidden}
 #coins .coin-wrap.drop-target,#coins .coin-wrap.drop-over{border-radius:14px}
 .drop-over{outline:3px solid var(--accent);outline-offset:2px;background:color-mix(in srgb,var(--accent) 14%,transparent)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+
+/* ---- полноэкранные экраны (история, настройки) — под листами/редактором (z 30/40) ---- */
+.screen{position:fixed;inset:0;z-index:28;background:var(--bg);display:flex;flex-direction:column;
+  transform:translateX(100%);transition:transform .24s cubic-bezier(.2,.8,.2,1),visibility .24s;visibility:hidden}
+.screen.on{transform:none;visibility:visible}
+.screen-head{display:flex;align-items:center;gap:12px;padding:calc(12px + env(safe-area-inset-top)) 14px 10px;max-width:460px;width:100%;margin:0 auto}
+.screen-title{font-size:18px;font-weight:800;letter-spacing:-.01em}
+.screen-body{flex:1;overflow-y:auto;overscroll-behavior:contain;padding:4px 14px calc(24px + env(safe-area-inset-bottom));max-width:460px;width:100%;margin:0 auto}
+.group{background:var(--surface);border:1px solid var(--line);border-radius:16px;overflow:hidden;margin-bottom:18px}
+.gitem{display:block;width:100%;text-align:left;border:0;border-top:1px solid var(--line);background:none;color:var(--ink);font-family:inherit;font-size:15px;font-weight:600;padding:14px 16px;cursor:pointer}
+.gitem:first-child{border-top:0}
+.gitem:active{background:var(--surface-2)}
+.gitem[hidden]{display:none}
+.gitem.danger{color:var(--red)}
+.gnote{padding:12px 16px;font-size:13px;color:var(--muted);line-height:1.4}
+.hday{display:flex;justify-content:space-between;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:700;margin:16px 2px 2px}
+.hday:first-child{margin-top:4px}
+.more{margin-top:14px}

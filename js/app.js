@@ -86,7 +86,19 @@ const App = (function () {
   const DND = {
     TOUCH_SLOP: 8,   // px — порог начала движения (меньше — дрожание, игнорируем)
     LONG_PRESS: 500, // мс — удержание «поднимает» монетку (drag в любую сторону)
+    EDGE: 22,        // px — зона у левого/правого края сетки (и поля за ним) для перелистывания
+    FLIP_DELAY: 550, // мс — сколько держать у края, чтобы страница перелистнулась
   };
+
+  // Куда листать страницы категорий, если палец с счётом стоит у края сетки:
+  // -1 влево, +1 вправо, 0 — не у края (или вне сетки по вертикали).
+  function edgeDir(x, y) {
+    const r = $("coins").getBoundingClientRect();
+    if (y < r.top || y > r.bottom) return 0;
+    if (x < r.left + DND.EDGE) return -1;
+    if (x > r.right - DND.EDGE) return 1;
+    return 0;
+  }
 
   // true пока монетка «поднята» или тащится — на это время гасим нативный скролл.
   let dragActive = false;
@@ -104,6 +116,22 @@ const App = (function () {
   function bindAccountGesture(el, accName, onTap, onHold) {
     let timer = null, lifted = false, dragging = false, moved = false, canceled = false;
     let sx = 0, sy = 0, pid = null, ghost = null, overEl = null;
+    let lx = 0, ly = 0, flipT = null, flipDir = 0;    // последняя точка пальца и таймер перелистывания
+
+    // Держишь счёт у края сетки → через FLIP_DELAY листаем страницу и, если палец
+    // всё ещё у края, продолжаем листать дальше (как перенос иконки на рабочем столе).
+    function armFlip(dir) {
+      if (dir === flipDir) return;
+      stopFlip(); flipDir = dir;
+      if (!dir) return;
+      flipT = setTimeout(function step() {
+        if (!dragging || !flipCoinPage(flipDir)) { stopFlip(); return; }
+        if (navigator.vibrate) navigator.vibrate(8);
+        setTimeout(() => { if (dragging) { const hit = hitTest(lx, ly); setOver(hit ? hit.el : null); } }, 320);
+        flipT = setTimeout(step, DND.FLIP_DELAY + 300);
+      }, DND.FLIP_DELAY);
+    }
+    function stopFlip() { clearTimeout(flipT); flipT = null; flipDir = 0; }
 
     function highlightAll(on) {
       dropTargets().forEach((t) => {
@@ -144,6 +172,7 @@ const App = (function () {
       overEl = newOver;
     }
     function endDrag(hit) {
+      stopFlip();
       if (ghost) { ghost.remove(); ghost = null; }
       highlightAll(false); setOver(null);
       el.classList.remove("drag-src");
@@ -153,7 +182,7 @@ const App = (function () {
       else openSheetForDrop(accName, "account", hit.name);
     }
     function cleanup() {
-      clearTimeout(timer);
+      clearTimeout(timer); stopFlip();
       if (dragging) { if (ghost) { ghost.remove(); ghost = null; } highlightAll(false); setOver(null); el.classList.remove("drag-src"); }
       lifted = false; dragging = false; dragActive = false;
     }
@@ -174,6 +203,8 @@ const App = (function () {
         moveGhost(e.clientX, e.clientY);
         const hit = hitTest(e.clientX, e.clientY);
         setOver(hit ? hit.el : null);
+        lx = e.clientX; ly = e.clientY;
+        armFlip(edgeDir(lx, ly));
         e.preventDefault();
         return;
       }
@@ -224,8 +255,8 @@ const App = (function () {
     // индикатор синка (см. renderSync — учитывает Drive/офлайн/состояние заливки)
     renderSync();
 
-    // монетки категорий
-    const coins = $("coins"); coins.innerHTML = "";
+    // монетки категорий — страницами (см. layoutCoins)
+    const tiles = [];
     for (const c of activeCats()) {
       const sp = spentOf(c.name), st = coinStyle(sp, c.limit);
       const b = document.createElement("button"); b.className = "coin-wrap"; b.dataset.cat = c.name;
@@ -234,13 +265,13 @@ const App = (function () {
         <div class="cspent" style="color:${st.txt}">${sp ? f0(sp) : 0}</div>
         <div class="climit">${c.limit ? "/ " + f0(c.limit) : "·"}</div>`;
       bindPress(b, () => showOperations("category", c.name), () => editCategory(c));
-      coins.appendChild(b);
+      tiles.push(b);
     }
     // «＋ новая категория»
     const addC = document.createElement("button"); addC.className = "coin-wrap";
     addC.innerHTML = `<div class="coin add">＋</div><div class="cname">Категория</div><div class="cspent">&nbsp;</div><div class="climit">·</div>`;
     addC.onclick = () => editCategory(null);
-    coins.appendChild(addC);
+    tiles.push(addC);
 
     // счета
     const accs = $("accs"); accs.innerHTML = "";
@@ -255,12 +286,143 @@ const App = (function () {
     addA.onclick = () => editAccount(null);
     accs.appendChild(addA);
 
-    // последние операции
-    const rec = $("recent"); rec.innerHTML = "";
-    const items = state.transactions.slice().sort((a, b) => (a.ts < b.ts ? 1 : -1)).slice(0, 7);
-    if (!items.length) rec.innerHTML = `<div class="rrow"><span class="s">Пока пусто — тапни монетку категории</span></div>`;
-    for (const t of items) rec.appendChild(opRow(t, true));
+    // история операций живёт на отдельном экране (меню) — обновляем, если он открыт
+    if ($("history").classList.contains("on")) renderHistory();
+    if ($("settings").classList.contains("on")) renderSettings();
+    syncDockHeight();
+    layoutCoins(tiles); // после дока: высота области категорий зависит от его высоты
   }
+
+  // Высота дока → --dock-h: низ области категорий и позиция тоста.
+  function syncDockHeight() {
+    document.documentElement.style.setProperty("--dock-h", $("dock").offsetHeight + "px");
+  }
+  window.addEventListener("resize", () => { syncDockHeight(); layoutCoins(); });
+
+  // ---------- страницы категорий ----------
+  // Вертикального скролла нет: на странице столько рядов, сколько влезает по высоте
+  // между плитками и доком, остальные категории — на следующих страницах (свайп вбок).
+  const COIN_COLS = 4;
+  let coinTiles = [];
+  const coinPage = () => { const vp = $("coins"); return Math.round(vp.scrollLeft / (vp.clientWidth || 1)); };
+  function layoutCoins(tiles) {
+    if (tiles) coinTiles = tiles;
+    if (!coinTiles.length) return;
+    const vp = $("coins"), keep = coinPage();
+    // замер: одна плитка на пробной странице → высота ряда и межрядный зазор
+    const probe = document.createElement("div"); probe.className = "cpage";
+    probe.appendChild(coinTiles[0]);
+    vp.replaceChildren(probe);
+    const rowH = coinTiles[0].offsetHeight;
+    const cs = getComputedStyle(probe);
+    const gap = parseFloat(cs.rowGap) || 0, padV = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    const rows = Math.max(1, Math.floor((vp.clientHeight - padV + gap) / (rowH + gap)));
+    const per = rows * COIN_COLS;
+    const pages = [];
+    for (let i = 0; i < coinTiles.length; i += per) {
+      const p = document.createElement("div"); p.className = "cpage";
+      p.style.gridTemplateRows = `repeat(${rows}, ${rowH}px)`;
+      coinTiles.slice(i, i + per).forEach((t) => p.appendChild(t));
+      pages.push(p);
+    }
+    vp.replaceChildren(...pages);
+    vp.scrollLeft = Math.min(keep, pages.length - 1) * vp.clientWidth;
+    renderCoinDots();
+  }
+  function renderCoinDots() {
+    const n = $("coins").children.length, cur = coinPage(), dots = $("coinDots");
+    dots.innerHTML = "";
+    if (n < 2) return;
+    for (let i = 0; i < n; i++) {
+      const d = document.createElement("button");
+      d.className = "cdot" + (i === cur ? " on" : "");
+      d.setAttribute("aria-label", `Страница категорий ${i + 1}`);
+      d.onclick = () => goCoinPage(i);
+      dots.appendChild(d);
+    }
+  }
+  function goCoinPage(i) { const vp = $("coins"); vp.scrollTo({ left: i * vp.clientWidth, behavior: "smooth" }); }
+  // Перелистнуть на соседнюю страницу (drag у края сетки). false — дальше листать некуда.
+  function flipCoinPage(dir) {
+    const next = coinPage() + dir;
+    if (next < 0 || next >= $("coins").children.length) return false;
+    goCoinPage(next); return true;
+  }
+  $("coins").addEventListener("scroll", () => {
+    const cur = coinPage();
+    $("coinDots").querySelectorAll(".cdot").forEach((d, i) => d.classList.toggle("on", i === cur));
+  }, { passive: true });
+
+  // ---------- полноэкранные экраны (история, настройки) ----------
+  // Системная «Назад» на Android закрывает экран: при открытии кладём запись в history.
+  function openScreen(id) {
+    const s = $(id);
+    if (s.classList.contains("on")) return;
+    s.classList.add("on");
+    history.pushState({ screen: id }, "");
+  }
+  function closeScreen() { if (document.querySelector(".screen.on")) history.back(); }
+  window.addEventListener("popstate", () => {
+    document.querySelectorAll(".screen.on").forEach((s) => s.classList.remove("on"));
+    closeAll();
+  });
+  document.querySelectorAll(".screen [data-close]").forEach((b) => b.onclick = closeScreen);
+
+  // История: все операции, новые сверху, сгруппированы по дням; длинный список — порциями.
+  const HISTORY_PAGE = 150;
+  let historyShown = HISTORY_PAGE;
+  function dayTitle(day) {
+    const d = new Date(day + "T00:00:00");
+    const opts = { day: "numeric", month: "long" };
+    if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
+    return new Intl.DateTimeFormat("ru-RU", opts).format(d);
+  }
+  function renderHistory() {
+    const body = $("historyBody"); body.innerHTML = "";
+    const all = state.transactions.slice().sort((a, b) => (a.ts < b.ts ? 1 : -1));
+    if (!all.length) { body.innerHTML = `<div class="rrow"><span class="s">Пока пусто — перетащи счёт на категорию</span></div>`; return; }
+    let day = null, box = null, dayExp = 0, dayHead = null;
+    const flush = () => { if (dayHead) dayHead.lastChild.textContent = dayExp ? "−" + f0(dayExp) + " ₴" : ""; };
+    for (const t of all.slice(0, historyShown)) {
+      const d = (t.ts || "").slice(0, 10);
+      if (d !== day) {
+        flush();
+        day = d; dayExp = 0;
+        dayHead = document.createElement("div"); dayHead.className = "hday";
+        dayHead.innerHTML = `<span>${esc(dayTitle(d))}</span><span></span>`;
+        box = document.createElement("div"); box.className = "recent";
+        body.appendChild(dayHead); body.appendChild(box);
+      }
+      if (t.type === "expense") dayExp += -t.amount * rate(t.cur);
+      box.appendChild(opRow(t, false));
+    }
+    flush();
+    if (all.length > historyShown) {
+      const more = document.createElement("button"); more.className = "btn ghost more";
+      more.style.width = "100%";
+      more.textContent = `Показать ещё (${all.length - historyShown})`;
+      more.onclick = () => { historyShown += HISTORY_PAGE; renderHistory(); };
+      body.appendChild(more);
+    }
+  }
+  function showHistory() { historyShown = HISTORY_PAGE; renderHistory(); $("historyBody").scrollTop = 0; openScreen("history"); }
+
+  // Настройки: всё техническое — Google Drive, файл vault, курсы, сброс данных.
+  function renderSettings() {
+    const configured = GDrive.isConfigured(), connected = GDrive.isConnected();
+    const s = $("settings");
+    const btn = (a) => s.querySelector(`[data-act="${a}"]`);
+    $("driveState").textContent = !configured ? "Ключи Google не заданы (config.local.js) — синхронизация через Drive выключена."
+      : connected ? "Подключён. Изменения заливаются в файл vault автоматически."
+      : "Не подключён. Данные хранятся только на этом устройстве.";
+    btn("gdrive").hidden = !configured;
+    btn("gdrive").textContent = connected ? "Переподключить Google Drive" : "Подключить Google Drive";
+    btn("syncNow").hidden = !connected;
+    btn("gdriveOff").hidden = !connected;
+    const r = state.meta.rates || {};
+    $("rateState").textContent = `$ ${f2(r.USD || 0)} · € ${f2(r.EUR || 0)} ₴ — ${Rates.label(r)}`;
+  }
+  function showSettings() { renderSettings(); openScreen("settings"); }
 
   // строка операции для списков (последние операции, список по объекту)
   function opRow(t, withDate) {
@@ -730,19 +892,29 @@ const App = (function () {
 
   // ---------- меню ----------
   const menu = $("menu");
-  $("menuBtn").onclick = (e) => { e.stopPropagation(); updateDriveMenu(); menu.classList.toggle("on"); };
+  // В меню — только пользовательское; всё техническое — на экране «Настройки».
+  $("menuBtn").onclick = (e) => { e.stopPropagation(); menu.classList.toggle("on"); };
   document.body.addEventListener("click", () => menu.classList.remove("on"));
   menu.querySelectorAll("button").forEach((b) => b.onclick = async () => {
     const act = b.dataset.act;
-    if (act === "gdrive") connectDrive();
-    else if (act === "gdriveOff") disconnectDrive();
+    if (act === "history") showHistory();
     else if (act === "incomes") manageIncomes();
     else if (act === "plan") editPlan();
+    else if (act === "settings") showSettings();
     else if (act === "theme") {
       const r = document.documentElement, cur = r.getAttribute("data-theme");
       const dark = cur ? cur === "dark" : matchMedia("(prefers-color-scheme:dark)").matches;
       const next = dark ? "light" : "dark"; r.setAttribute("data-theme", next); await setMeta("theme", next);
-    } else if (act === "export") {
+    }
+  });
+
+  $("settings").querySelectorAll("[data-act]").forEach((b) => b.onclick = async () => {
+    const act = b.dataset.act;
+    if (act === "gdrive") connectDrive();
+    else if (act === "gdriveOff") disconnectDrive();
+    else if (act === "syncNow") flushToDrive(true);
+    else if (act === "rates") { await refreshRates(true); renderSettings(); toast(navigator.onLine ? "Курс обновлён" : "Нет сети — остаётся последний курс"); }
+    else if (act === "export") {
       await doExport();
     } else if (act === "import") {
       doImport();
@@ -861,15 +1033,8 @@ const App = (function () {
     toast("Google Drive отключён");
   }
 
-  // Показ/подписи пунктов меню Drive по состоянию подключения.
-  function updateDriveMenu() {
-    const m = $("menu"); if (!m) return;
-    const on = m.querySelector('[data-act="gdrive"]');
-    const off = m.querySelector('[data-act="gdriveOff"]');
-    const configured = GDrive.isConfigured(), connected = GDrive.isConnected();
-    if (on) { on.hidden = !configured; on.textContent = connected ? "Переподключить Google Drive" : "Подключить Google Drive"; }
-    if (off) off.hidden = !connected;
-  }
+  // Пункты Drive живут на экране «Настройки» — перерисовываем его по состоянию подключения.
+  function updateDriveMenu() { renderSettings(); }
 
   // ---------- экспорт в vault (§4, §6) ----------
   async function doExport() {

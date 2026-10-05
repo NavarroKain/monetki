@@ -29,15 +29,11 @@
       <button class="iconbtn" id="menuBtn" aria-label="Меню">⋯</button>
     </div>
     <div class="menu" id="menu">
-      <button data-act="gdrive">Подключить Google Drive</button>
-      <button data-act="gdriveOff" hidden>Отключить Google Drive</button>
-      <button data-act="export">Экспорт в vault</button>
-      <button data-act="import">Импорт из vault</button>
-      <button data-act="exportReset">Сменить файл экспорта</button>
+      <button data-act="history">История операций</button>
       <button data-act="incomes">Источники доходов</button>
-      <button data-act="plan">Изменить план месяца</button>
+      <button data-act="plan">План месяца</button>
       <button data-act="theme">Сменить тему</button>
-      <button data-act="reset">Сбросить все данные</button>
+      <button data-act="settings" class="sep">Настройки</button>
     </div>
   </div>
 
@@ -48,19 +44,55 @@
   </div>
 
   <div class="section">Категории — тап операции, удержание изменить</div>
-  <div class="grid" id="coins"></div>
-
-  <div class="section">Счета — тап операции, удержание изменить</div>
-  <div class="accrow" id="accs"></div>
-
-  <div class="section">Последние операции</div>
-  <div class="recent" id="recent"></div>
+  <!-- Страницы категорий: листаются вбок, вертикального скролла нет -->
+  <div class="pages" id="coins"></div>
+  <div class="cdots" id="coinDots"></div>
 </div>
 
-<div class="fab">
-  <button class="mini" id="btnTransfer">⇄ Перевод</button>
-  <button class="add" id="btnAdd" aria-label="Добавить расход">+</button>
-  <button class="mini" id="btnIncome">＋ Доход</button>
+<!-- Док счетов: закреплён внизу экрана, чтобы источник для drag всегда был под пальцем.
+     Категорий может быть сколько угодно — прокручивается страница, док остаётся на месте. -->
+<div class="dock" id="dock">
+  <div class="dock-hint">Счета — тяни на категорию или на другой счёт</div>
+  <div class="accrow" id="accs"></div>
+  <div class="fab">
+    <button class="mini" id="btnTransfer">⇄ Перевод</button>
+    <button class="add" id="btnAdd" aria-label="Добавить расход">+</button>
+    <button class="mini" id="btnIncome">＋ Доход</button>
+  </div>
+</div>
+
+<!-- Полноэкранные экраны: история операций и технические настройки -->
+<div class="screen" id="history" role="dialog" aria-label="История операций">
+  <div class="screen-head"><button class="iconbtn" data-close aria-label="Назад">←</button><div class="screen-title">История операций</div></div>
+  <div class="screen-body" id="historyBody"></div>
+</div>
+
+<div class="screen" id="settings" role="dialog" aria-label="Настройки">
+  <div class="screen-head"><button class="iconbtn" data-close aria-label="Назад">←</button><div class="screen-title">Настройки</div></div>
+  <div class="screen-body">
+    <div class="section">Google Drive</div>
+    <div class="group">
+      <div class="gnote" id="driveState">—</div>
+      <button class="gitem" data-act="gdrive">Подключить Google Drive</button>
+      <button class="gitem" data-act="syncNow">Синхронизировать сейчас</button>
+      <button class="gitem" data-act="gdriveOff">Отключить Google Drive</button>
+    </div>
+    <div class="section">Файл vault</div>
+    <div class="group">
+      <button class="gitem" data-act="export">Экспорт в vault</button>
+      <button class="gitem" data-act="import">Импорт из vault</button>
+      <button class="gitem" data-act="exportReset">Сменить файл экспорта</button>
+    </div>
+    <div class="section">Курсы валют</div>
+    <div class="group">
+      <div class="gnote" id="rateState">—</div>
+      <button class="gitem" data-act="rates">Обновить курс</button>
+    </div>
+    <div class="section">Данные</div>
+    <div class="group">
+      <button class="gitem danger" data-act="reset">Сбросить все данные</button>
+    </div>
+  </div>
 </div>
 
 <div class="scrim" id="scrim"></div>
