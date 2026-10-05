@@ -86,7 +86,21 @@ const App = (function () {
   const DND = {
     TOUCH_SLOP: 8,   // px — порог начала движения (меньше — дрожание, игнорируем)
     LONG_PRESS: 500, // мс — удержание «поднимает» монетку (drag в любую сторону)
+    EDGE: 80,        // px — зона у верхнего края и над доком, где страница автопрокручивается
+    SCROLL_MAX: 14,  // px/кадр — максимальная скорость автопрокрутки
   };
+
+  // Скорость автопрокрутки страницы под пальцем во время drag'а: категорий может быть
+  // сколько угодно, а док со счетами закреплён — дотягиваемся до дальних, не отпуская.
+  // Вниз крутим только после того, как палец хоть раз вышел из нижней зоны (armedDown):
+  // drag стартует из дока и проходит её по пути вверх — там прокрутка не нужна.
+  function edgeSpeed(y, armedDown) {
+    const dockTop = $("dock").getBoundingClientRect().top;
+    const Z = DND.EDGE, M = DND.SCROLL_MAX;
+    if (y < Z) return -Math.ceil(M * (Z - y) / Z);
+    if (armedDown && y > dockTop - Z && y < dockTop) return Math.ceil(M * (y - (dockTop - Z)) / Z);
+    return 0;
+  }
 
   // true пока монетка «поднята» или тащится — на это время гасим нативный скролл.
   let dragActive = false;
@@ -104,6 +118,19 @@ const App = (function () {
   function bindAccountGesture(el, accName, onTap, onHold) {
     let timer = null, lifted = false, dragging = false, moved = false, canceled = false;
     let sx = 0, sy = 0, pid = null, ghost = null, overEl = null;
+    let lx = 0, ly = 0, raf = 0, armedDown = false;   // последняя точка пальца и цикл автопрокрутки
+
+    function autoScroll() {
+      raf = 0;
+      if (!dragging) return;
+      const v = edgeSpeed(ly, armedDown);
+      if (!v) return;
+      window.scrollBy(0, v);
+      const hit = hitTest(lx, ly);                    // под неподвижным пальцем «проехали» категории
+      setOver(hit ? hit.el : null);
+      raf = requestAnimationFrame(autoScroll);
+    }
+    function stopAutoScroll() { if (raf) { cancelAnimationFrame(raf); raf = 0; } }
 
     function highlightAll(on) {
       dropTargets().forEach((t) => {
@@ -130,7 +157,7 @@ const App = (function () {
       return null;                                    // мимо или на себя
     }
     function startDrag(x, y) {
-      dragging = true; dragActive = true;
+      dragging = true; dragActive = true; armedDown = false;
       try { el.setPointerCapture(pid); } catch (e) {}
       el.classList.add("drag-src");
       ghost = makeGhost(); moveGhost(x, y);
@@ -144,6 +171,7 @@ const App = (function () {
       overEl = newOver;
     }
     function endDrag(hit) {
+      stopAutoScroll();
       if (ghost) { ghost.remove(); ghost = null; }
       highlightAll(false); setOver(null);
       el.classList.remove("drag-src");
@@ -153,7 +181,7 @@ const App = (function () {
       else openSheetForDrop(accName, "account", hit.name);
     }
     function cleanup() {
-      clearTimeout(timer);
+      clearTimeout(timer); stopAutoScroll();
       if (dragging) { if (ghost) { ghost.remove(); ghost = null; } highlightAll(false); setOver(null); el.classList.remove("drag-src"); }
       lifted = false; dragging = false; dragActive = false;
     }
@@ -174,6 +202,9 @@ const App = (function () {
         moveGhost(e.clientX, e.clientY);
         const hit = hitTest(e.clientX, e.clientY);
         setOver(hit ? hit.el : null);
+        lx = e.clientX; ly = e.clientY;
+        if (ly < $("dock").getBoundingClientRect().top - DND.EDGE) armedDown = true;
+        if (!raf && edgeSpeed(ly, armedDown)) raf = requestAnimationFrame(autoScroll);
         e.preventDefault();
         return;
       }
@@ -255,12 +286,88 @@ const App = (function () {
     addA.onclick = () => editAccount(null);
     accs.appendChild(addA);
 
-    // последние операции
-    const rec = $("recent"); rec.innerHTML = "";
-    const items = state.transactions.slice().sort((a, b) => (a.ts < b.ts ? 1 : -1)).slice(0, 7);
-    if (!items.length) rec.innerHTML = `<div class="rrow"><span class="s">Пока пусто — тапни монетку категории</span></div>`;
-    for (const t of items) rec.appendChild(opRow(t, true));
+    // история операций живёт на отдельном экране (меню) — обновляем, если он открыт
+    if ($("history").classList.contains("on")) renderHistory();
+    if ($("settings").classList.contains("on")) renderSettings();
+    syncDockHeight();
   }
+
+  // Высота дока → --dock-h: отступ под последним рядом категорий и позиция тоста.
+  function syncDockHeight() {
+    document.documentElement.style.setProperty("--dock-h", $("dock").offsetHeight + "px");
+  }
+  window.addEventListener("resize", syncDockHeight);
+
+  // ---------- полноэкранные экраны (история, настройки) ----------
+  // Системная «Назад» на Android закрывает экран: при открытии кладём запись в history.
+  function openScreen(id) {
+    const s = $(id);
+    if (s.classList.contains("on")) return;
+    s.classList.add("on");
+    history.pushState({ screen: id }, "");
+  }
+  function closeScreen() { if (document.querySelector(".screen.on")) history.back(); }
+  window.addEventListener("popstate", () => {
+    document.querySelectorAll(".screen.on").forEach((s) => s.classList.remove("on"));
+    closeAll();
+  });
+  document.querySelectorAll(".screen [data-close]").forEach((b) => b.onclick = closeScreen);
+
+  // История: все операции, новые сверху, сгруппированы по дням; длинный список — порциями.
+  const HISTORY_PAGE = 150;
+  let historyShown = HISTORY_PAGE;
+  function dayTitle(day) {
+    const d = new Date(day + "T00:00:00");
+    const opts = { day: "numeric", month: "long" };
+    if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
+    return new Intl.DateTimeFormat("ru-RU", opts).format(d);
+  }
+  function renderHistory() {
+    const body = $("historyBody"); body.innerHTML = "";
+    const all = state.transactions.slice().sort((a, b) => (a.ts < b.ts ? 1 : -1));
+    if (!all.length) { body.innerHTML = `<div class="rrow"><span class="s">Пока пусто — перетащи счёт на категорию</span></div>`; return; }
+    let day = null, box = null, dayExp = 0, dayHead = null;
+    const flush = () => { if (dayHead) dayHead.lastChild.textContent = dayExp ? "−" + f0(dayExp) + " ₴" : ""; };
+    for (const t of all.slice(0, historyShown)) {
+      const d = (t.ts || "").slice(0, 10);
+      if (d !== day) {
+        flush();
+        day = d; dayExp = 0;
+        dayHead = document.createElement("div"); dayHead.className = "hday";
+        dayHead.innerHTML = `<span>${esc(dayTitle(d))}</span><span></span>`;
+        box = document.createElement("div"); box.className = "recent";
+        body.appendChild(dayHead); body.appendChild(box);
+      }
+      if (t.type === "expense") dayExp += -t.amount * rate(t.cur);
+      box.appendChild(opRow(t, false));
+    }
+    flush();
+    if (all.length > historyShown) {
+      const more = document.createElement("button"); more.className = "btn ghost more";
+      more.style.width = "100%";
+      more.textContent = `Показать ещё (${all.length - historyShown})`;
+      more.onclick = () => { historyShown += HISTORY_PAGE; renderHistory(); };
+      body.appendChild(more);
+    }
+  }
+  function showHistory() { historyShown = HISTORY_PAGE; renderHistory(); $("historyBody").scrollTop = 0; openScreen("history"); }
+
+  // Настройки: всё техническое — Google Drive, файл vault, курсы, сброс данных.
+  function renderSettings() {
+    const configured = GDrive.isConfigured(), connected = GDrive.isConnected();
+    const s = $("settings");
+    const btn = (a) => s.querySelector(`[data-act="${a}"]`);
+    $("driveState").textContent = !configured ? "Ключи Google не заданы (config.local.js) — синхронизация через Drive выключена."
+      : connected ? "Подключён. Изменения заливаются в файл vault автоматически."
+      : "Не подключён. Данные хранятся только на этом устройстве.";
+    btn("gdrive").hidden = !configured;
+    btn("gdrive").textContent = connected ? "Переподключить Google Drive" : "Подключить Google Drive";
+    btn("syncNow").hidden = !connected;
+    btn("gdriveOff").hidden = !connected;
+    const r = state.meta.rates || {};
+    $("rateState").textContent = `$ ${f2(r.USD || 0)} · € ${f2(r.EUR || 0)} ₴ — ${Rates.label(r)}`;
+  }
+  function showSettings() { renderSettings(); openScreen("settings"); }
 
   // строка операции для списков (последние операции, список по объекту)
   function opRow(t, withDate) {
@@ -730,19 +837,29 @@ const App = (function () {
 
   // ---------- меню ----------
   const menu = $("menu");
-  $("menuBtn").onclick = (e) => { e.stopPropagation(); updateDriveMenu(); menu.classList.toggle("on"); };
+  // В меню — только пользовательское; всё техническое — на экране «Настройки».
+  $("menuBtn").onclick = (e) => { e.stopPropagation(); menu.classList.toggle("on"); };
   document.body.addEventListener("click", () => menu.classList.remove("on"));
   menu.querySelectorAll("button").forEach((b) => b.onclick = async () => {
     const act = b.dataset.act;
-    if (act === "gdrive") connectDrive();
-    else if (act === "gdriveOff") disconnectDrive();
+    if (act === "history") showHistory();
     else if (act === "incomes") manageIncomes();
     else if (act === "plan") editPlan();
+    else if (act === "settings") showSettings();
     else if (act === "theme") {
       const r = document.documentElement, cur = r.getAttribute("data-theme");
       const dark = cur ? cur === "dark" : matchMedia("(prefers-color-scheme:dark)").matches;
       const next = dark ? "light" : "dark"; r.setAttribute("data-theme", next); await setMeta("theme", next);
-    } else if (act === "export") {
+    }
+  });
+
+  $("settings").querySelectorAll("[data-act]").forEach((b) => b.onclick = async () => {
+    const act = b.dataset.act;
+    if (act === "gdrive") connectDrive();
+    else if (act === "gdriveOff") disconnectDrive();
+    else if (act === "syncNow") flushToDrive(true);
+    else if (act === "rates") { await refreshRates(true); renderSettings(); toast(navigator.onLine ? "Курс обновлён" : "Нет сети — остаётся последний курс"); }
+    else if (act === "export") {
       await doExport();
     } else if (act === "import") {
       doImport();
@@ -861,15 +978,8 @@ const App = (function () {
     toast("Google Drive отключён");
   }
 
-  // Показ/подписи пунктов меню Drive по состоянию подключения.
-  function updateDriveMenu() {
-    const m = $("menu"); if (!m) return;
-    const on = m.querySelector('[data-act="gdrive"]');
-    const off = m.querySelector('[data-act="gdriveOff"]');
-    const configured = GDrive.isConfigured(), connected = GDrive.isConnected();
-    if (on) { on.hidden = !configured; on.textContent = connected ? "Переподключить Google Drive" : "Подключить Google Drive"; }
-    if (off) off.hidden = !connected;
-  }
+  // Пункты Drive живут на экране «Настройки» — перерисовываем его по состоянию подключения.
+  function updateDriveMenu() { renderSettings(); }
 
   // ---------- экспорт в vault (§4, §6) ----------
   async function doExport() {
