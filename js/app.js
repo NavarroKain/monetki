@@ -86,19 +86,17 @@ const App = (function () {
   const DND = {
     TOUCH_SLOP: 8,   // px — порог начала движения (меньше — дрожание, игнорируем)
     LONG_PRESS: 500, // мс — удержание «поднимает» монетку (drag в любую сторону)
-    EDGE: 80,        // px — зона у верхнего края и над доком, где страница автопрокручивается
-    SCROLL_MAX: 14,  // px/кадр — максимальная скорость автопрокрутки
+    EDGE: 22,        // px — зона у левого/правого края сетки (и поля за ним) для перелистывания
+    FLIP_DELAY: 550, // мс — сколько держать у края, чтобы страница перелистнулась
   };
 
-  // Скорость автопрокрутки страницы под пальцем во время drag'а: категорий может быть
-  // сколько угодно, а док со счетами закреплён — дотягиваемся до дальних, не отпуская.
-  // Вниз крутим только после того, как палец хоть раз вышел из нижней зоны (armedDown):
-  // drag стартует из дока и проходит её по пути вверх — там прокрутка не нужна.
-  function edgeSpeed(y, armedDown) {
-    const dockTop = $("dock").getBoundingClientRect().top;
-    const Z = DND.EDGE, M = DND.SCROLL_MAX;
-    if (y < Z) return -Math.ceil(M * (Z - y) / Z);
-    if (armedDown && y > dockTop - Z && y < dockTop) return Math.ceil(M * (y - (dockTop - Z)) / Z);
+  // Куда листать страницы категорий, если палец с счётом стоит у края сетки:
+  // -1 влево, +1 вправо, 0 — не у края (или вне сетки по вертикали).
+  function edgeDir(x, y) {
+    const r = $("coins").getBoundingClientRect();
+    if (y < r.top || y > r.bottom) return 0;
+    if (x < r.left + DND.EDGE) return -1;
+    if (x > r.right - DND.EDGE) return 1;
     return 0;
   }
 
@@ -118,19 +116,22 @@ const App = (function () {
   function bindAccountGesture(el, accName, onTap, onHold) {
     let timer = null, lifted = false, dragging = false, moved = false, canceled = false;
     let sx = 0, sy = 0, pid = null, ghost = null, overEl = null;
-    let lx = 0, ly = 0, raf = 0, armedDown = false;   // последняя точка пальца и цикл автопрокрутки
+    let lx = 0, ly = 0, flipT = null, flipDir = 0;    // последняя точка пальца и таймер перелистывания
 
-    function autoScroll() {
-      raf = 0;
-      if (!dragging) return;
-      const v = edgeSpeed(ly, armedDown);
-      if (!v) return;
-      window.scrollBy(0, v);
-      const hit = hitTest(lx, ly);                    // под неподвижным пальцем «проехали» категории
-      setOver(hit ? hit.el : null);
-      raf = requestAnimationFrame(autoScroll);
+    // Держишь счёт у края сетки → через FLIP_DELAY листаем страницу и, если палец
+    // всё ещё у края, продолжаем листать дальше (как перенос иконки на рабочем столе).
+    function armFlip(dir) {
+      if (dir === flipDir) return;
+      stopFlip(); flipDir = dir;
+      if (!dir) return;
+      flipT = setTimeout(function step() {
+        if (!dragging || !flipCoinPage(flipDir)) { stopFlip(); return; }
+        if (navigator.vibrate) navigator.vibrate(8);
+        setTimeout(() => { if (dragging) { const hit = hitTest(lx, ly); setOver(hit ? hit.el : null); } }, 320);
+        flipT = setTimeout(step, DND.FLIP_DELAY + 300);
+      }, DND.FLIP_DELAY);
     }
-    function stopAutoScroll() { if (raf) { cancelAnimationFrame(raf); raf = 0; } }
+    function stopFlip() { clearTimeout(flipT); flipT = null; flipDir = 0; }
 
     function highlightAll(on) {
       dropTargets().forEach((t) => {
@@ -157,7 +158,7 @@ const App = (function () {
       return null;                                    // мимо или на себя
     }
     function startDrag(x, y) {
-      dragging = true; dragActive = true; armedDown = false;
+      dragging = true; dragActive = true;
       try { el.setPointerCapture(pid); } catch (e) {}
       el.classList.add("drag-src");
       ghost = makeGhost(); moveGhost(x, y);
@@ -171,7 +172,7 @@ const App = (function () {
       overEl = newOver;
     }
     function endDrag(hit) {
-      stopAutoScroll();
+      stopFlip();
       if (ghost) { ghost.remove(); ghost = null; }
       highlightAll(false); setOver(null);
       el.classList.remove("drag-src");
@@ -181,7 +182,7 @@ const App = (function () {
       else openSheetForDrop(accName, "account", hit.name);
     }
     function cleanup() {
-      clearTimeout(timer); stopAutoScroll();
+      clearTimeout(timer); stopFlip();
       if (dragging) { if (ghost) { ghost.remove(); ghost = null; } highlightAll(false); setOver(null); el.classList.remove("drag-src"); }
       lifted = false; dragging = false; dragActive = false;
     }
@@ -203,8 +204,7 @@ const App = (function () {
         const hit = hitTest(e.clientX, e.clientY);
         setOver(hit ? hit.el : null);
         lx = e.clientX; ly = e.clientY;
-        if (ly < $("dock").getBoundingClientRect().top - DND.EDGE) armedDown = true;
-        if (!raf && edgeSpeed(ly, armedDown)) raf = requestAnimationFrame(autoScroll);
+        armFlip(edgeDir(lx, ly));
         e.preventDefault();
         return;
       }
@@ -255,8 +255,8 @@ const App = (function () {
     // индикатор синка (см. renderSync — учитывает Drive/офлайн/состояние заливки)
     renderSync();
 
-    // монетки категорий
-    const coins = $("coins"); coins.innerHTML = "";
+    // монетки категорий — страницами (см. layoutCoins)
+    const tiles = [];
     for (const c of activeCats()) {
       const sp = spentOf(c.name), st = coinStyle(sp, c.limit);
       const b = document.createElement("button"); b.className = "coin-wrap"; b.dataset.cat = c.name;
@@ -265,13 +265,13 @@ const App = (function () {
         <div class="cspent" style="color:${st.txt}">${sp ? f0(sp) : 0}</div>
         <div class="climit">${c.limit ? "/ " + f0(c.limit) : "·"}</div>`;
       bindPress(b, () => showOperations("category", c.name), () => editCategory(c));
-      coins.appendChild(b);
+      tiles.push(b);
     }
     // «＋ новая категория»
     const addC = document.createElement("button"); addC.className = "coin-wrap";
     addC.innerHTML = `<div class="coin add">＋</div><div class="cname">Категория</div><div class="cspent">&nbsp;</div><div class="climit">·</div>`;
     addC.onclick = () => editCategory(null);
-    coins.appendChild(addC);
+    tiles.push(addC);
 
     // счета
     const accs = $("accs"); accs.innerHTML = "";
@@ -290,13 +290,68 @@ const App = (function () {
     if ($("history").classList.contains("on")) renderHistory();
     if ($("settings").classList.contains("on")) renderSettings();
     syncDockHeight();
+    layoutCoins(tiles); // после дока: высота области категорий зависит от его высоты
   }
 
-  // Высота дока → --dock-h: отступ под последним рядом категорий и позиция тоста.
+  // Высота дока → --dock-h: низ области категорий и позиция тоста.
   function syncDockHeight() {
     document.documentElement.style.setProperty("--dock-h", $("dock").offsetHeight + "px");
   }
-  window.addEventListener("resize", syncDockHeight);
+  window.addEventListener("resize", () => { syncDockHeight(); layoutCoins(); });
+
+  // ---------- страницы категорий ----------
+  // Вертикального скролла нет: на странице столько рядов, сколько влезает по высоте
+  // между плитками и доком, остальные категории — на следующих страницах (свайп вбок).
+  const COIN_COLS = 4;
+  let coinTiles = [];
+  const coinPage = () => { const vp = $("coins"); return Math.round(vp.scrollLeft / (vp.clientWidth || 1)); };
+  function layoutCoins(tiles) {
+    if (tiles) coinTiles = tiles;
+    if (!coinTiles.length) return;
+    const vp = $("coins"), keep = coinPage();
+    // замер: одна плитка на пробной странице → высота ряда и межрядный зазор
+    const probe = document.createElement("div"); probe.className = "cpage";
+    probe.appendChild(coinTiles[0]);
+    vp.replaceChildren(probe);
+    const rowH = coinTiles[0].offsetHeight;
+    const cs = getComputedStyle(probe);
+    const gap = parseFloat(cs.rowGap) || 0, padV = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    const rows = Math.max(1, Math.floor((vp.clientHeight - padV + gap) / (rowH + gap)));
+    const per = rows * COIN_COLS;
+    const pages = [];
+    for (let i = 0; i < coinTiles.length; i += per) {
+      const p = document.createElement("div"); p.className = "cpage";
+      p.style.gridTemplateRows = `repeat(${rows}, ${rowH}px)`;
+      coinTiles.slice(i, i + per).forEach((t) => p.appendChild(t));
+      pages.push(p);
+    }
+    vp.replaceChildren(...pages);
+    vp.scrollLeft = Math.min(keep, pages.length - 1) * vp.clientWidth;
+    renderCoinDots();
+  }
+  function renderCoinDots() {
+    const n = $("coins").children.length, cur = coinPage(), dots = $("coinDots");
+    dots.innerHTML = "";
+    if (n < 2) return;
+    for (let i = 0; i < n; i++) {
+      const d = document.createElement("button");
+      d.className = "cdot" + (i === cur ? " on" : "");
+      d.setAttribute("aria-label", `Страница категорий ${i + 1}`);
+      d.onclick = () => goCoinPage(i);
+      dots.appendChild(d);
+    }
+  }
+  function goCoinPage(i) { const vp = $("coins"); vp.scrollTo({ left: i * vp.clientWidth, behavior: "smooth" }); }
+  // Перелистнуть на соседнюю страницу (drag у края сетки). false — дальше листать некуда.
+  function flipCoinPage(dir) {
+    const next = coinPage() + dir;
+    if (next < 0 || next >= $("coins").children.length) return false;
+    goCoinPage(next); return true;
+  }
+  $("coins").addEventListener("scroll", () => {
+    const cur = coinPage();
+    $("coinDots").querySelectorAll(".cdot").forEach((d, i) => d.classList.toggle("on", i === cur));
+  }, { passive: true });
 
   // ---------- полноэкранные экраны (история, настройки) ----------
   // Системная «Назад» на Android закрывает экран: при открытии кладём запись в history.
