@@ -23,11 +23,14 @@ const App = (function () {
   const curSym = (c) => (c === "USD" ? "$" : c === "EUR" ? "€" : c === "UAH" ? "₴" : c);
 
   const MONTH = (() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); })();
-  const monthTitle = () => {
-    const d = new Date(MONTH + "-01T00:00:00");
-    const s = new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric" }).format(d);
+  const ymTitle = (ym) => {
+    const s = new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric" }).format(new Date(ym + "-01T00:00:00"));
     return s.charAt(0).toUpperCase() + s.slice(1);
   };
+  const monthTitle = () => ymTitle(MONTH);
+  // «в октябре» — подпись к суммам за текущий месяц
+  const MONTH_IN = ["январе", "феврале", "марте", "апреле", "мае", "июне", "июле", "августе", "сентябре", "октябре", "ноябре", "декабре"];
+  const inMonth = () => "в " + MONTH_IN[+MONTH.slice(5) - 1];
   function nowTs() {
     const d = new Date(), p = (n) => String(n).padStart(2, "0");
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
@@ -368,44 +371,65 @@ const App = (function () {
   });
   document.querySelectorAll(".screen [data-close]").forEach((b) => b.onclick = closeScreen);
 
-  // История: все операции, новые сверху, сгруппированы по дням; длинный список — порциями.
-  const HISTORY_PAGE = 150;
-  let historyShown = HISTORY_PAGE;
+  // Список операций: новые сверху, с заголовками месяцев (и дней, если задан daySum),
+  // длинный список — порциями. Итоги месяца/дня считаются по всем его операциям,
+  // а не только по показанной порции.
+  const LIST_PAGE = 150;
+  const byTsDesc = (a, b) => (a.ts < b.ts ? 1 : -1);
   function dayTitle(day) {
     const d = new Date(day + "T00:00:00");
     const opts = { day: "numeric", month: "long" };
     if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
     return new Intl.DateTimeFormat("ru-RU", opts).format(d);
   }
-  function renderHistory() {
-    const body = $("historyBody"); body.innerHTML = "";
-    const all = state.transactions.slice().sort((a, b) => (a.ts < b.ts ? 1 : -1));
-    if (!all.length) { body.innerHTML = `<div class="rrow"><span class="s">Пока пусто — перетащи счёт на категорию</span></div>`; return; }
-    let day = null, box = null, dayExp = 0, dayHead = null;
-    const flush = () => { if (dayHead) dayHead.lastChild.textContent = dayExp ? "−" + f0(dayExp) + " ₴" : ""; };
-    for (const t of all.slice(0, historyShown)) {
-      const d = (t.ts || "").slice(0, 10);
-      if (d !== day) {
-        flush();
-        day = d; dayExp = 0;
-        dayHead = document.createElement("div"); dayHead.className = "hday";
-        dayHead.innerHTML = `<span>${esc(dayTitle(d))}</span><span></span>`;
-        box = document.createElement("div"); box.className = "recent";
-        body.appendChild(dayHead); body.appendChild(box);
-      }
-      if (t.type === "expense") dayExp += -t.amount * rate(t.cur);
-      box.appendChild(opRow(t, false));
+  function renderGrouped(body, items, { shown, monthSum, daySum, withDate, empty, onMore }) {
+    body.innerHTML = "";
+    if (!items.length) { body.innerHTML = `<div class="rrow"><span class="s">${empty}</span></div>`; return; }
+    const ym = (t) => (t.ts || "").slice(0, 7), dd = (t) => (t.ts || "").slice(0, 10);
+    const groups = (key) => {
+      const m = new Map();
+      for (const t of items) { const k = key(t); if (!m.has(k)) m.set(k, []); m.get(k).push(t); }
+      return m;
+    };
+    const months = groups(ym), days = daySum ? groups(dd) : null;
+    const head = (cls, title, sum) => {
+      const h = document.createElement("div"); h.className = cls;
+      h.innerHTML = `<span>${esc(title)}</span><span>${esc(sum)}</span>`;
+      body.appendChild(h);
+    };
+    let curM = null, curD = null, box = null;
+    for (const t of items.slice(0, shown)) {
+      const m = ym(t), d = dd(t);
+      if (m !== curM) { curM = m; curD = null; box = null; head("hmonth", ymTitle(m), monthSum(months.get(m))); }
+      if (days && d !== curD) { curD = d; box = null; head("hday", dayTitle(d), daySum(days.get(d))); }
+      if (!box) { box = document.createElement("div"); box.className = "recent"; body.appendChild(box); }
+      box.appendChild(opRow(t, withDate));
     }
-    flush();
-    if (all.length > historyShown) {
+    if (items.length > shown) {
       const more = document.createElement("button"); more.className = "btn ghost more";
       more.style.width = "100%";
-      more.textContent = `Показать ещё (${all.length - historyShown})`;
-      more.onclick = () => { historyShown += HISTORY_PAGE; renderHistory(); };
+      more.textContent = `Показать ещё (${items.length - shown})`;
+      more.onclick = onMore;
       body.appendChild(more);
     }
   }
-  function showHistory() { historyShown = HISTORY_PAGE; renderHistory(); $("historyBody").scrollTop = 0; openScreen("history"); }
+  // расходы в гривнах; пусто, если расходов нет
+  const expSum = (list) => {
+    let s = 0;
+    for (const t of list) if (t.type === "expense") s += -t.amount * rate(t.cur);
+    return s ? "−" + f0(s) + " ₴" : "";
+  };
+
+  // История: все операции, по месяцам и дням.
+  let historyShown = LIST_PAGE;
+  function renderHistory() {
+    renderGrouped($("historyBody"), state.transactions.slice().sort(byTsDesc), {
+      shown: historyShown, monthSum: expSum, daySum: expSum, withDate: false,
+      empty: "Пока пусто — перетащи счёт на категорию",
+      onMore: () => { historyShown += LIST_PAGE; renderHistory(); },
+    });
+  }
+  function showHistory() { historyShown = LIST_PAGE; renderHistory(); $("historyBody").scrollTop = 0; openScreen("history"); }
 
   // Настройки: всё техническое — Google Drive, файл vault, курсы, сброс данных.
   function renderSettings() {
@@ -430,7 +454,7 @@ const App = (function () {
     const col = isT ? "var(--muted)" : (t.amount < 0 ? "var(--red)" : "var(--coin-green)");
     const sign = isT ? "" : (t.amount < 0 ? "−" : "+");
     const label = isT ? `${esc(t.acc)} → ${esc(t.to)}` : esc(t.cat);
-    const date = withDate && !isT ? " · " + (t.ts || "").slice(5, 10).replace("-", ".") : "";
+    const date = withDate && !isT ? " · " + (t.ts || "").slice(5, 10).split("-").reverse().join(".") : ""; // ДД.ММ
     const r = document.createElement("div"); r.className = "rrow";
     r.innerHTML = `<div><div class="l">${label}</div><div class="s">${esc(t.acc)}${date}</div></div><b style="color:${col}">${sign}${f2(Math.abs(t.amount))} ${curSym(t.cur)}</b>`;
     r.onclick = () => editOperation(t);
@@ -844,49 +868,56 @@ const App = (function () {
   }
 
   // ---------- список операций по объекту (категория / счёт) ----------
+  // Вся история объекта, по месяцам; в шапке — итог за текущий месяц.
   const txMonth = (t) => (t.ts || "").slice(0, 7);
+  const signed = (n, sym) => (n > 0 ? "+" : n < 0 ? "−" : "") + f0(Math.abs(n)) + (sym ? " " + sym : "");
   function showOperations(kind, name) {
-    let items, emoji, subtitle, total, totalColor, addLabel = null;
+    let items, emoji, subtitle, total, totalColor, monthSum, addLabel = null;
     if (kind === "category") {
       const c = catByName(name);
-      items = state.transactions.filter((t) => t.type === "expense" && t.cat === name && txMonth(t) === MONTH);
+      items = state.transactions.filter((t) => t.type === "expense" && t.cat === name);
       emoji = c ? c.emoji : "🪙";
-      subtitle = "Расходы · " + monthTitle();
+      subtitle = "Расходы · вся история";
       total = spentOf(name);
       totalColor = total > 0 ? "var(--red)" : "var(--muted)";
+      // как в spentOf — без пересчёта валют
+      monthSum = (list) => { let s = 0; for (const t of list) s += -t.amount; return s ? "−" + f0(s) + " ₴" : ""; };
       addLabel = "＋ Добавить расход";
     } else {
-      const a = accByName(name);
-      items = state.transactions.filter((t) => (t.acc === name || t.to === name) && txMonth(t) === MONTH);
+      const a = accByName(name), sym = a ? curSym(a.currency) : "";
+      items = state.transactions.filter((t) => t.acc === name || t.to === name);
       emoji = a ? curSym(a.currency) : "•";
-      subtitle = "Обороты · " + monthTitle();
-      let net = 0;
-      for (const t of items) net += (t.acc === name ? t.amount : -t.amount);
-      total = net;
-      totalColor = net < 0 ? "var(--red)" : net > 0 ? "var(--coin-green)" : "var(--muted)";
+      subtitle = "Обороты · вся история";
+      const net = (list) => { let n = 0; for (const t of list) n += (t.acc === name ? t.amount : -t.amount); return n; };
+      total = net(items.filter((t) => txMonth(t) === MONTH));
+      totalColor = total < 0 ? "var(--red)" : total > 0 ? "var(--coin-green)" : "var(--muted)";
+      monthSum = (list) => signed(net(list), sym);
     }
-    items.sort((a, b) => (a.ts < b.ts ? 1 : -1));
+    items.sort(byTsDesc);
     const totalStr = (kind === "category")
       ? f0(total) + " ₴"
-      : (total > 0 ? "+" : total < 0 ? "−" : "") + f0(Math.abs(total)) + (accByName(name) ? " " + curSym(accByName(name).currency) : "");
+      : signed(total, accByName(name) ? curSym(accByName(name).currency) : "");
 
     openEditor(`
       <div class="form">
         <div class="sheet-head" style="margin-bottom:12px">
           <div class="em" style="background:var(--surface-2)">${esc(emoji)}</div>
           <div><div class="t" style="font-weight:800;color:var(--ink);font-size:15px">${esc(name)}</div><div class="t">${subtitle}</div></div>
-          <div class="amt" style="font-size:22px;color:${totalColor}">${totalStr}</div>
+          <div class="amt" style="font-size:22px;color:${totalColor}">${totalStr}<div class="amt-sub">${inMonth()}</div></div>
         </div>
         ${addLabel ? `<button class="save" id="opAdd" style="margin-top:0;margin-bottom:12px">${addLabel}</button>` : ""}
-        <div class="recent" id="opList"></div>
+        <div id="opList"></div>
         <div class="form-actions"><button class="btn ghost" id="eCancel">Закрыть</button></div>
       </div>`, () => {
       $("eCancel").onclick = closeAll;
       const add = $("opAdd");
       if (add) add.onclick = () => openSheet("expense", name);
-      const list = $("opList");
-      if (!items.length) list.innerHTML = `<div class="rrow"><span class="s">Нет операций за этот месяц</span></div>`;
-      else for (const t of items) list.appendChild(opRow(t, true));
+      let shown = LIST_PAGE;
+      const draw = () => renderGrouped($("opList"), items, {
+        shown, monthSum, withDate: true, empty: "Операций пока нет",
+        onMore: () => { shown += LIST_PAGE; draw(); },
+      });
+      draw();
     });
   }
 
