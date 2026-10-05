@@ -210,6 +210,10 @@ html,body{overflow:hidden;height:100%}
 .gitem[hidden]{display:none}
 .gitem.danger{color:var(--red)}
 .gnote{padding:12px 16px;font-size:13px;color:var(--muted);line-height:1.4}
-.hday{display:flex;justify-content:space-between;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:700;margin:16px 2px 2px}
-.hday:first-child{margin-top:4px}
+.hday{display:flex;justify-content:space-between;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:700;margin:12px 2px 2px}
+/* заголовок месяца в списках операций: крупнее дня, с итогом справа */
+.hmonth{display:flex;justify-content:space-between;font-size:13px;font-weight:800;color:var(--ink);margin:22px 2px 4px;padding-bottom:6px;border-bottom:2px solid var(--line)}
+.hmonth:first-child{margin-top:4px}
+.hmonth+.hday{margin-top:8px}
+.amt-sub{font-size:11px;font-weight:600;color:var(--muted);letter-spacing:0;text-align:right}
 .more{margin-top:14px}
