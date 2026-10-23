@@ -438,7 +438,7 @@ const App = (function () {
     const btn = (a) => s.querySelector(`[data-act="${a}"]`);
     $("driveState").textContent = !configured ? "Ключи Google не заданы (config.local.js) — синхронизация через Drive выключена."
       : connected ? "Подключён. Изменения заливаются в файл vault автоматически."
-      : "Не подключён. Данные хранятся только на этом устройстве.";
+      : "Не подключён. Данные хранятся только на этом устройстве. При подключении существующего файла данные из него загрузятся сюда.";
     btn("gdrive").hidden = !configured;
     btn("gdrive").textContent = connected ? "Переподключить Google Drive" : "Подключить Google Drive";
     btn("syncNow").hidden = !connected;
@@ -991,6 +991,13 @@ const App = (function () {
   // Одна попытка заливки. Токен берётся тихо; если истёк и manual — открываем вход в
   // Google (БЕЗ Picker, файл уже привязан) и повторяем. Затем помечаем операции.
   async function pushOnce(manual) {
+    // Предохранитель: пустой телефон не затирает файл, в котором есть операции.
+    if (!state.transactions.length) {
+      const remote = Vault.parseAny(await GDrive.pull());
+      if (remote.transactions.length) {
+        throw new Error(`на телефоне нет операций, а в файле ${remote.transactions.length} — не перезаписываю. Переподключи Google Drive`);
+      }
+    }
     const json = Vault.buildJSON(state);
     try {
       await GDrive.push(json);

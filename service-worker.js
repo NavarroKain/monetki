@@ -8,7 +8,7 @@
      - сторонние запросы (курсы Monobank, шрифты): не перехватываем, идут в сеть.
    Данные операций живут в IndexedDB, не тут. */
 
-const CACHE = "monetki-shell-v16";
+const CACHE = "monetki-shell-v17";
 
 // Относительные пути — чтобы работало и в корне, и в подпапке GitHub Pages.
 const SHELL = [
@@ -51,7 +51,7 @@ self.addEventListener("fetch", (e) => {
   // Навигация → network-first (свежий HTML), офлайн — кэш.
   if (req.mode === "navigate") {
     e.respondWith(
-      fetch(req)
+      fetch(req, { cache: "no-cache" })
         .then((res) => {
           const copy = res.clone();
           caches.open(CACHE).then((c) => c.put("./index.html", copy)).catch(() => {});
@@ -65,7 +65,7 @@ self.addEventListener("fetch", (e) => {
   // Прочая статика оболочки → network-first: свежий код при сети, докешируем;
   // оффлайн — из кэша. Так обновления подхватываются без очистки данных.
   e.respondWith(
-    fetch(req).then((res) => {
+    fetch(req, { cache: "no-cache" }).then((res) => {
       if (res && res.ok && res.type === "basic") {
         const copy = res.clone();
         caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
