@@ -3,8 +3,9 @@
    Приложение само пишет снапшот прямо в ОДИН файл «Финансы — Монетки.json» в папке
    vault через Drive API — без ручного экспорта и без сторонних синхронизаторов.
 
-   Направление v1: только запись (push) телефон → Drive. IndexedDB остаётся источником
-   истины (js/db.js), оффлайн-ввод не трогаем — синк отложенный.
+   Направление: запись (push) телефон → Drive; чтение (pull) — только при привязке
+   существующего файла, чтобы новый телефон подтянул данные, а не затёр их. IndexedDB
+   остаётся источником истины (js/db.js), оффлайн-ввод не трогаем — синк отложенный.
 
    Аутентификация: Google Identity Services (GIS), token-флоу в браузере, scope
    drive.file (доступ только к файлам, которые приложение создало или пользователь
@@ -160,9 +161,17 @@ const GDrive = (function () {
     });
   }
 
+  function doGet(id, token) {
+    return fetch("https://www.googleapis.com/drive/v3/files/" +
+      encodeURIComponent(id) + "?alt=media", {
+      headers: { Authorization: "Bearer " + token },
+    });
+  }
+
   // ---- публичное API ----
 
   // Разовая привязка: консент → Picker → сохранить fileId/folderId в meta.
+  // existing:true — выбран уже существующий файл (его надо прочитать ДО первой заливки).
   async function connect() {
     if (!isConfigured()) throw new Error("Нет ключей Google (config.local.js)");
     const token = await getToken(true);
@@ -170,7 +179,7 @@ const GDrive = (function () {
     const doc = await showPicker(token); // бросит "cancelled", если закрыли
     if (!doc || !doc.id) throw new Error("cancelled");
 
-    let fileId, folderId = null;
+    let fileId, folderId = null, existing = false;
     if (doc.mimeType === FOLDER_MIME) {
       folderId = doc.id;
       const created = await createFile(folderId);
@@ -178,10 +187,26 @@ const GDrive = (function () {
     } else {
       fileId = doc.id;
       folderId = doc.parentId || null; // best-effort
+      existing = true;
     }
     binding = { fileId, folderId, fileName: fileName() };
     await DB.put("meta", { key: "gdrive", value: binding });
-    return binding;
+    return Object.assign({ existing }, binding);
+  }
+
+  // Прочитать содержимое привязанного файла (files.get, alt=media). Ретрай на 401 как в push.
+  async function pull() {
+    if (!isConnected()) throw new Error("Google Drive не подключён");
+    let token = await getToken(false);
+    let r = await doGet(binding.fileId, token);
+    if (r.status === 401) {
+      accessToken = null; tokenExp = 0;
+      token = await getToken(false);
+      r = await doGet(binding.fileId, token);
+    }
+    if (r.status === 404) throw new Error("Файл в Drive не найден (404)");
+    if (!r.ok) throw new Error("Чтение файла: HTTP " + r.status);
+    return r.text();
   }
 
   // Залить снапшот в привязанный файл (files.update, media). Тихий рефреш токена и один
@@ -210,7 +235,7 @@ const GDrive = (function () {
     accessToken = null; tokenExp = 0;
   }
 
-  return { isConfigured, isConnected, fileName, getBinding, load, connect, push, reauth, isAuthError, disconnect };
+  return { isConfigured, isConnected, fileName, getBinding, load, connect, pull, push, reauth, isAuthError, disconnect };
 })();
 
 window.GDrive = GDrive;

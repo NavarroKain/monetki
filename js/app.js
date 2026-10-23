@@ -1043,19 +1043,52 @@ const App = (function () {
     el.classList.add("ok"); txt.textContent = "синхр.";
   }
 
-  // Пункт меню «Подключить Google Drive»: консент + выбор файла/папки, затем первая заливка.
+  // Пункт меню «Подключить Google Drive»: консент + выбор файла/папки. Если выбран
+  // существующий файл — сначала читаем его (новый телефон подтягивает данные), и только
+  // потом, если пользователь так решил, заливаем снапшот телефона.
   async function connectDrive() {
     if (!GDrive.isConfigured()) { toast("Нет ключей Google — добавь config.local.js"); return; }
+    let linked = false;
     try {
       toast("Открываю Google…");
-      await GDrive.connect();
+      const b = await GDrive.connect();
+      linked = true;
+      if (b.existing && !(await reconcileOnConnect())) { linked = false; return; }
+      linked = false;
       updateDriveMenu(); renderSync();
       toast("Google Drive подключён");
       await flushToDrive(true); // первичная заливка текущего снапшота
     } catch (e) {
+      // Привязку, по которой не удалось сверить файл, не оставляем — иначе следующий
+      // автосинк молча затрёт файл данными телефона.
+      if (linked) await GDrive.disconnect();
+      updateDriveMenu(); renderSync();
       if (e && e.message === "cancelled") return;
       console.error(e); toast("Не удалось подключить: " + friendly(e));
     }
+  }
+
+  // Сверка с уже существующим файлом. true — можно заливать снапшот телефона в файл;
+  // false — данные загружены из файла либо подключение отменено (заливать нельзя).
+  async function reconcileOnConnect() {
+    const remote = Vault.parseAny(await GDrive.pull());
+    if (remote.error) throw new Error("Файл в Drive повреждён — не JSON Монеток");
+    const rn = remote.transactions.length;
+    if (!rn && !remote.accounts.length && !remote.categories.length) return true; // файл пустой
+    const ln = state.transactions.length;
+    const take = ln === 0 || confirm(`В файле Google Drive операций: ${rn}, на телефоне: ${ln}.\n` +
+      "ОК — загрузить данные из файла (данные телефона будут заменены).\nОтмена — другие варианты.");
+    if (take) {
+      await replaceData(remote);
+      updateDriveMenu(); renderSync();
+      toast(`Google Drive подключён, загружено ${rn} операций`);
+      return false;
+    }
+    if (confirm("Перезаписать файл в Google Drive данными телефона?\nДанные в файле будут потеряны.")) return true;
+    await GDrive.disconnect();
+    updateDriveMenu(); renderSync();
+    toast("Подключение отменено, файл не тронут");
+    return false;
   }
 
   async function disconnectDrive() {
@@ -1136,13 +1169,19 @@ const App = (function () {
     const n = data.transactions.length, m = data.accounts.length, k = data.categories.length;
     if (!n && !m && !k) { toast("Не найдено данных Монеток"); return; }
     if (!confirm(`Импорт из ${sourceLabel}:\nопераций ${n}, счетов ${m}, категорий ${k}.\nТекущие данные будут заменены.`)) return;
+    await replaceData(data);
+    toast(`Импортировано: ${n} операций, ${m} счетов, ${k} категорий`);
+  }
+
+  // Заменить данные приложения разобранным снапшотом и перезагрузить состояние.
+  async function replaceData(data) {
+    syncSuspended = true;
     await DB.clear("transactions"); await DB.clear("accounts"); await DB.clear("categories");
-    if (k) await DB.bulkPut("categories", data.categories);
-    if (m) await DB.bulkPut("accounts", data.accounts);
-    if (n) await DB.bulkPut("transactions", data.transactions);
+    if (data.categories.length) await DB.bulkPut("categories", data.categories);
+    if (data.accounts.length) await DB.bulkPut("accounts", data.accounts);
+    if (data.transactions.length) await DB.bulkPut("transactions", data.transactions);
     if (data.plan != null) await setMeta("plan", data.plan);
     await boot(true);
-    toast(`Импортировано: ${n} операций, ${m} счетов, ${k} категорий`);
   }
 
   // ---------- курсы ----------
