@@ -22,6 +22,23 @@ const App = (function () {
   const f2 = (n) => new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
   const curSym = (c) => (c === "USD" ? "$" : c === "EUR" ? "€" : c === "UAH" ? "₴" : c);
 
+  // ---------- переводы между валютами ----------
+  // Перевод хранит списание в валюте источника (amount<0, cur) и, если валюты счетов
+  // разные, — зачисление в валюте получателя (toAmount>0, toCur) и курс обмена
+  // rate = toAmount / |amount| (сколько единиц toCur получено за 1 единицу cur).
+  const fRate = (n) => new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(n);
+  const isFxTx = (t) => t.type === "transfer" && t.toCur && t.toCur !== t.cur && t.toAmount != null;
+  const inAmt = (t) => (t.toAmount != null ? t.toAmount : -t.amount); // сколько пришло на счёт t.to
+  const calcRate = (fromV, toV) => Math.round(toV / fromV * 1e6) / 1e6;
+  // «1 € = 45,20 ₴» — всегда в направлении, где курс ≥ 1 (так его привычно читать).
+  function rateText(fromV, fromCur, toV, toCur) {
+    if (!(fromV > 0 && toV > 0)) return "";
+    const r = toV / fromV;
+    return r >= 1 ? `1 ${curSym(fromCur)} = ${fRate(r)} ${curSym(toCur)}`
+      : `1 ${curSym(toCur)} = ${fRate(1 / r)} ${curSym(fromCur)}`;
+  }
+  const txRateText = (t) => (isFxTx(t) ? rateText(-t.amount, t.cur, t.toAmount, t.toCur) : "");
+
   const MONTH = (() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); })();
   const ymTitle = (ym) => {
     const s = new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric" }).format(new Date(ym + "-01T00:00:00"));
@@ -455,8 +472,11 @@ const App = (function () {
     const sign = isT ? "" : (t.amount < 0 ? "−" : "+");
     const label = isT ? `${esc(t.acc)} → ${esc(t.to)}` : esc(t.cat);
     const date = withDate && !isT ? " · " + (t.ts || "").slice(5, 10).split("-").reverse().join(".") : ""; // ДД.ММ
+    const fx = isFxTx(t);
+    const sub = fx ? "курс " + txRateText(t) : esc(t.acc) + date;
+    const sum = `${sign}${f2(Math.abs(t.amount))} ${curSym(t.cur)}` + (fx ? ` → ${f2(t.toAmount)} ${curSym(t.toCur)}` : "");
     const r = document.createElement("div"); r.className = "rrow";
-    r.innerHTML = `<div><div class="l">${label}</div><div class="s">${esc(t.acc)}${date}</div></div><b style="color:${col}">${sign}${f2(Math.abs(t.amount))} ${curSym(t.cur)}</b>`;
+    r.innerHTML = `<div><div class="l">${label}</div><div class="s">${sub}</div></div><b style="color:${col};text-align:right">${sum}</b>`;
     r.onclick = () => editOperation(t);
     return r;
   }
@@ -485,7 +505,7 @@ const App = (function () {
     if (t.type === "transfer") {
       const from = accByName(t.acc), to = accByName(t.to);
       if (from) from.balance = round2(from.balance + dir * t.amount);       // amount < 0
-      if (to) to.balance = round2(to.balance + dir * (-t.amount));
+      if (to) to.balance = round2(to.balance + dir * inAmt(t));             // в валюте получателя
     } else {
       const a = accByName(t.acc);
       if (a) a.balance = round2(a.balance + dir * t.amount);                 // expense<0, income>0
@@ -498,10 +518,11 @@ const App = (function () {
 
   // ---------- лист ввода ----------
   const sheet = $("sheet"), editor = $("editor"), scrim = $("scrim");
+  let amtTo = "0", fxField = "from"; // перевод между валютами: сумма зачисления и активное поле ввода
   let mode = "expense", amt = "0", selCat = null, selInc = null, selAcc = null, selTo = null, selBalAcc = null;
 
   function openSheet(m, cat) {
-    mode = m; amt = "0";
+    mode = m; amt = "0"; amtTo = "0"; fxField = "from";
     selCat = cat || (activeCats()[0] && activeCats()[0].name) || null;
     selInc = (incomeSources()[0] && incomeSources()[0].name) || null;
     if (!selAcc || !accByName(selAcc) || accByName(selAcc).kind === "income") {
@@ -563,16 +584,48 @@ const App = (function () {
       toWrap.style.display = "";
       if (!selTo || selTo === selAcc) { const o = realAccounts().find((a) => a.name !== selAcc); selTo = o ? o.name : null; }
       for (const a of realAccounts()) toChips.appendChild(chip(a.name, a.name === selTo, () => { selTo = a.name; buildSheet(); }));
+      const fa = accByName(selAcc), ta = accByName(selTo);
+      if (fa && ta && fa.currency !== ta.currency) sub.textContent = `${fa.currency} → ${ta.currency}`;
     } else { // balance
       emEl.textContent = "✎"; emEl.style.background = "var(--surface-2)";
       title.textContent = "Новый баланс"; sub.textContent = selBalAcc || "—";
       accLabel.textContent = "Счёт";
       for (const a of realAccounts()) accChips.appendChild(chip(a.name, a.name === selBalAcc, () => { selBalAcc = a.name; buildSheet(); }));
     }
-    $("shAmt").textContent = amt;
     buildPad();
-    $("save").disabled = (parseFloat(amt) || 0) <= 0 && mode !== "balance";
+    updateAmounts();
   }
+
+  // Перевод между счетами в разных валютах?  → { from, to } счета, иначе null.
+  function fxPair() {
+    if (mode !== "transfer") return null;
+    const from = accByName(selAcc), to = accByName(selTo);
+    return from && to && from.currency !== to.currency ? { from, to } : null;
+  }
+
+  // Обновить суммы на листе (без пересборки чипов) + доступность «Сохранить».
+  function updateAmounts() {
+    const fx = fxPair();
+    $("fxWrap").style.display = fx ? "" : "none";
+    $("shAmt").style.display = fx ? "none" : "";
+    $("shAmt").textContent = amt;
+    const v = parseFloat(amt) || 0, w = parseFloat(amtTo) || 0;
+    if (fx) {
+      if (fxField === "to" && v <= 0) fxField = "from";
+      $("fxFrom").classList.toggle("on", fxField === "from");
+      $("fxTo").classList.toggle("on", fxField === "to");
+      $("fxFromV").textContent = amt + " " + curSym(fx.from.currency);
+      $("fxToV").textContent = amtTo + " " + curSym(fx.to.currency);
+      const mkt = rate(fx.from.currency) / rate(fx.to.currency); // рыночный кросс-курс (для подсказки)
+      const mktTxt = "рынок " + rateText(1, fx.from.currency, mkt, fx.to.currency);
+      $("fxRate").innerHTML = (v > 0 && w > 0)
+        ? `Курс обмена: <b>${rateText(v, fx.from.currency, w, fx.to.currency)}</b> · ${mktTxt}`
+        : (v > 0 ? `Укажи, сколько зачислится на «${esc(fx.to.name)}» · ${mktTxt}` : mktTxt);
+    }
+    $("save").disabled = mode !== "balance" && (v <= 0 || (fx && w <= 0));
+  }
+  $("fxFrom").onclick = () => { fxField = "from"; updateAmounts(); };
+  $("fxTo").onclick = () => { fxField = "to"; updateAmounts(); };
 
   function buildPad() {
     const pad = $("pad"); pad.innerHTML = "";
@@ -581,12 +634,14 @@ const App = (function () {
     });
   }
   function press(k) {
-    if (k === "⌫") amt = amt.length > 1 ? amt.slice(0, -1) : "0";
-    else if (k === ".") { if (!amt.includes(".")) amt += "."; }
-    else amt = amt === "0" ? k : amt + k;
-    if (amt.includes(".") && amt.split(".")[1].length > 2) amt = amt.slice(0, -1);
-    $("shAmt").textContent = amt;
-    $("save").disabled = (parseFloat(amt) || 0) <= 0 && mode !== "balance";
+    const toField = fxPair() && fxField === "to";
+    let b = toField ? amtTo : amt;
+    if (k === "⌫") b = b.length > 1 ? b.slice(0, -1) : "0";
+    else if (k === ".") { if (!b.includes(".")) b += "."; }
+    else b = b === "0" ? k : b + k;
+    if (b.includes(".") && b.split(".")[1].length > 2) b = b.slice(0, -1);
+    if (toField) amtTo = b; else amt = b;
+    updateAmounts();
   }
 
   $("save").onclick = async () => {
@@ -610,10 +665,18 @@ const App = (function () {
       } else if (mode === "transfer") {
         if (!selAcc || !selTo) { toast("Выбери счета"); return; }
         if (selAcc === selTo) { toast("Счета совпадают"); return; }
-        const cur = accByName(selAcc).currency;
-        await putTx({ id: uid(), ts: nowTs(), amount: -v, cat: "Перевод", acc: selAcc, to: selTo, cur, type: "transfer", synced: false });
-        await adj(selAcc, -v); await adj(selTo, v);
-        toast(`${selAcc} → ${selTo}: ${f2(v)}`);
+        const cur = accByName(selAcc).currency, toCur = accByName(selTo).currency;
+        const t = { id: uid(), ts: nowTs(), amount: -v, cat: "Перевод", acc: selAcc, to: selTo, cur, type: "transfer", synced: false };
+        if (toCur !== cur) {
+          const w = parseFloat(amtTo) || 0;
+          if (w <= 0) { toast(`Укажи, сколько зачислится на «${selTo}»`); fxField = "to"; updateAmounts(); return; }
+          t.toAmount = w; t.toCur = toCur; t.rate = calcRate(v, w);
+        }
+        await putTx(t);
+        await adj(selAcc, -v); await adj(selTo, inAmt(t));
+        toast(isFxTx(t)
+          ? `${f2(v)} ${curSym(cur)} → ${f2(t.toAmount)} ${curSym(toCur)} · ${txRateText(t)}`
+          : `${selAcc} → ${selTo}: ${f2(v)}`);
       }
     }
     closeAll(); render(); scheduleSync();
@@ -827,12 +890,34 @@ const App = (function () {
       body += `<label>Со счёта</label><select class="input" id="eAcc">${realAccounts().map((a) => optTag(a.name, a.name === t.acc)).join("")}</select>`;
       body += `<label>На счёт</label><select class="input" id="eTo">${realAccounts().map((a) => optTag(a.name, a.name === t.to)).join("")}</select>`;
     }
-    body += `<label>Сумма</label><input class="input" id="eAmt" inputmode="decimal" value="${absv}">`;
+    body += `<label>${type === "transfer" ? "Списано" : "Сумма"}</label><input class="input" id="eAmt" inputmode="decimal" value="${absv}">`;
+    if (type === "transfer") {
+      body += `<div id="eToAmtWrap" style="display:none"><label id="eToAmtLabel">Зачислено</label><input class="input" id="eToAmt" inputmode="decimal" value="${t.toAmount != null ? t.toAmount : ""}" placeholder="сколько пришло на счёт"></div>`;
+      body += `<div class="hint" id="eRate"></div>`;
+    }
     body += `<label>Дата и время</label><input class="input" id="eDate" type="datetime-local" value="${dateVal}">`;
     if (type !== "transfer") body += `<label>Заметка</label><input class="input" id="eNote" value="${esc(t.note || "")}" placeholder="необязательно">`;
     body += `<div class="form-actions"><button class="btn danger" id="eDel">Удалить</button><button class="btn ghost" id="eCancel">Отмена</button><button class="btn primary" id="eSave">Сохранить</button></div></div>`;
     openEditor(body, () => {
       $("eCancel").onclick = closeAll;
+      const num = (id) => Math.abs(parseFloat($(id).value.trim().replace(",", ".")) || 0);
+      // перевод: поле «Зачислено» и курс видны, только если валюты счетов разные
+      const fxCurs = () => {
+        if (type !== "transfer") return null;
+        const fa = accByName($("eAcc").value), ta = accByName($("eTo").value);
+        return fa && ta && fa.currency !== ta.currency ? { from: fa.currency, to: ta.currency } : null;
+      };
+      const syncFx = () => {
+        const c = fxCurs();
+        if (type !== "transfer") return;
+        $("eToAmtWrap").style.display = c ? "" : "none";
+        if (!c) { $("eRate").textContent = ""; return; }
+        $("eToAmtLabel").textContent = `Зачислено, ${curSym(c.to)}`;
+        const r = rateText(num("eAmt"), c.from, num("eToAmt"), c.to);
+        $("eRate").textContent = r ? "Курс обмена: " + r : "Укажи, сколько зачислено — курс посчитается сам";
+      };
+      if (type === "transfer") ["eAcc", "eTo", "eAmt", "eToAmt"].forEach((id) => { $(id).addEventListener("input", syncFx); $(id).addEventListener("change", syncFx); });
+      syncFx();
       $("eDel").onclick = async () => {
         if (!confirm("Удалить эту операцию? Баланс вернётся к прежнему.")) return;
         balanceApply(t, -1);
@@ -842,8 +927,10 @@ const App = (function () {
         closeAll(); render(); scheduleSync(); toast("Операция удалена");
       };
       $("eSave").onclick = async () => {
-        const v = Math.abs(parseFloat($("eAmt").value.trim().replace(",", ".")) || 0);
+        const v = num("eAmt");
         if (v <= 0) { toast("Введи сумму"); return; }
+        const fxc = fxCurs(), w = fxc ? num("eToAmt") : 0;
+        if (fxc && w <= 0) { toast("Укажи, сколько зачислено"); return; }
         const oldNames = [t.acc, t.to];
         balanceApply(t, -1); // откат старого влияния
         if (type === "expense") {
@@ -856,6 +943,8 @@ const App = (function () {
           const from = $("eAcc").value, to = $("eTo").value;
           if (from === to) { balanceApply(t, 1); toast("Счета совпадают"); return; }
           t.acc = from; t.to = to; t.amount = -v; t.cur = accByName(from).currency;
+          if (fxc) { t.toAmount = w; t.toCur = fxc.to; t.rate = calcRate(v, w); }
+          else { delete t.toAmount; delete t.toCur; delete t.rate; }
         }
         const d = $("eDate").value; if (d) t.ts = d.length === 16 ? d + ":00" : d;
         t.synced = false;
@@ -888,7 +977,7 @@ const App = (function () {
       items = state.transactions.filter((t) => t.acc === name || t.to === name);
       emoji = a ? curSym(a.currency) : "•";
       subtitle = "Обороты · вся история";
-      const net = (list) => { let n = 0; for (const t of list) n += (t.acc === name ? t.amount : -t.amount); return n; };
+      const net = (list) => { let n = 0; for (const t of list) n += (t.acc === name ? t.amount : inAmt(t)); return n; };
       total = net(items.filter((t) => txMonth(t) === MONTH));
       totalColor = total < 0 ? "var(--red)" : total > 0 ? "var(--coin-green)" : "var(--muted)";
       monthSum = (list) => signed(net(list), sym);

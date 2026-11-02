@@ -115,6 +115,15 @@
   <div class="field" id="accLabel">Счёт</div>
   <div class="chips" id="accChips"></div>
   <div id="toWrap" style="display:none"><div class="field">На счёт</div><div class="chips" id="toChips"></div></div>
+  <!-- Перевод между счетами в разных валютах: сколько списали и сколько зачислили -->
+  <div id="fxWrap" class="fx" style="display:none">
+    <div class="fx-boxes">
+      <button class="fx-box on" id="fxFrom" type="button"><span class="fx-l">Списать</span><span class="fx-v" id="fxFromV">0</span></button>
+      <span class="fx-arrow">→</span>
+      <button class="fx-box" id="fxTo" type="button"><span class="fx-l">Зачислить</span><span class="fx-v" id="fxToV">0</span></button>
+    </div>
+    <div class="fx-rate" id="fxRate"></div>
+  </div>
   <div class="pad" id="pad"></div>
   <button class="save" id="save">Сохранить</button>
 </div>

@@ -134,6 +134,10 @@ const Vault = (function () {
         cur: t.cur || "UAH", type: t.type || "expense", synced: t.synced !== false,
       };
       if (t.to) o.to = t.to;
+      // перевод между валютами: сумма зачисления, её валюта и зафиксированный курс
+      if (t.toAmount != null && !isNaN(Number(t.toAmount))) o.toAmount = Number(t.toAmount);
+      if (t.toCur) o.toCur = t.toCur;
+      if (t.rate != null && !isNaN(Number(t.rate))) o.rate = Number(t.rate);
       if (t.note) o.note = t.note;
       return o;
     });
